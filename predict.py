@@ -231,12 +231,12 @@ def calc_top3_probs(horses: list[dict]) -> list[dict]:
         weight_factor = 1.0 if abs_wc <= 6 else (1.0 - (abs_wc - 6) * 0.01)
         weight_factor = max(weight_factor, 0.85)
 
-        # 対数線形スコア: 市場60% + 通算20% + 当場10% + 当距離10%
+        # 対数線形スコア: 市場30% + 通算20% + 当場25% + 当距離25%
         log_score = (
-            0.60 * math.log(max(p_market[i], 1e-4))
+            0.30 * math.log(max(p_market[i], 1e-4))
             + 0.20 * math.log(max(r_overall, 0.01))
-            + 0.10 * math.log(max(r_track, 0.01))
-            + 0.10 * math.log(max(r_dist, 0.01))
+            + 0.25 * math.log(max(r_track, 0.01))
+            + 0.25 * math.log(max(r_dist, 0.01))
         )
         scores.append(math.exp(log_score) * weight_factor)
 
@@ -392,7 +392,7 @@ def main() -> None:
 
     print(f"\n{'=' * 65}")
     print(f"  名古屋競馬 {mode}  {date_disp}")
-    print(f"  ※ スコア = 市場オッズ60% + 通算成績20% + 当場10% + 当距離10%")
+    print(f"  ※ スコア = 市場オッズ30% + 通算成績20% + 当場25% + 当距離25%")
     print(f"{'=' * 65}\n")
 
     print("レース一覧を取得中...")
