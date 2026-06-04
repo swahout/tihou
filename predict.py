@@ -208,27 +208,146 @@ def get_horse_data(date_str: str, race_no: int) -> list[dict]:
         if i < len(arrival_tables):
             horse["arrival"] = parse_arrival_table(arrival_tables[i])
 
+    # ── 過去走（馬場状態別成績用）──
+    extract_past_races(soup_deba, horses)
+
     return horses
+
+
+# ─────────────────────────────────────────────
+# 過去走データ解析（馬場状態別成績）
+# ─────────────────────────────────────────────
+
+TRACK_CONDITIONS = {"重", "稍重", "良", "不良"}
+_PAST_RACE_RE = re.compile(r"^(\d{1,2})(\d{2}\.\d{2}\.\d{2})")
+
+
+def parse_past_race_cell(text: str) -> dict | None:
+    """'526.05.05　重　5頭名古屋　右2000　3番' → {'pos': 5, 'track_cond': '重'}"""
+    m = _PAST_RACE_RE.match(text)
+    if not m:
+        return None
+    pos = int(m.group(1))
+    parts = [p.strip() for p in re.split(r"[\s　]+", text) if p.strip()]
+    track_cond = parts[1] if len(parts) > 1 and parts[1] in TRACK_CONDITIONS else None
+    return {"pos": pos, "track_cond": track_cond}
+
+
+def extract_past_races(soup_deba, horses: list[dict]) -> None:
+    """出馬表 Table 0 から各馬の過去5走（馬場状態・着順）を horses に付与"""
+    tables = soup_deba.find_all("table")
+    if not tables:
+        return
+    name_to_idx = {h["name"]: i for i, h in enumerate(horses)}
+
+    for row in tables[0].find_all("tr"):
+        cells = [td.get_text(strip=True) for td in row.find_all(["td", "th"])]
+        matched_idx = next((name_to_idx[c] for c in cells if c in name_to_idx), None)
+        if matched_idx is None:
+            continue
+        past = [p for c in cells if (p := parse_past_race_cell(c)) is not None]
+        if past:
+            horses[matched_idx]["past_races"] = past
+
+
+# ─────────────────────────────────────────────
+# 今日の馬場傾向（枠番バイアス）
+# ─────────────────────────────────────────────
+
+def get_today_trend(date_str: str, current_race_no: int) -> dict:
+    """
+    完了済みレースから枠番バイアスを計算。
+    Returns: {'completed': N, 'gate_bias': {gate: factor}, 'enough_data': bool}
+    """
+    gate_stats: dict[int, list[int]] = {i: [0, 0] for i in range(1, 9)}  # {gate: [entries, top3]}
+    completed = 0
+
+    for rno in range(1, current_race_no):
+        try:
+            date_enc = date_str.replace("/", "%2F")
+            url = (
+                f"{BASE_URL}/KeibaWeb/TodayRaceInfo/RaceMarkTable"
+                f"?k_raceDate={date_enc}&k_babaCode={BABA_CODE}&k_raceNo={rno}"
+            )
+            time.sleep(0.6)
+            resp = requests.get(url, headers=HEADERS, timeout=15)
+            resp.raise_for_status()
+            soup = BeautifulSoup(resp.content, "lxml")
+            table = soup.find("table")
+            if not table:
+                continue
+            rows = table.find_all("tr")[1:]
+            if not rows:
+                continue
+            for row in rows:
+                cells = [td.get_text(strip=True) for td in row.find_all(["td", "th"])]
+                if len(cells) < 3:
+                    continue
+                try:
+                    pos  = int(cells[0])
+                    gate = int(cells[1])
+                    if 1 <= gate <= 8:
+                        gate_stats[gate][0] += 1
+                        if pos <= 3:
+                            gate_stats[gate][1] += 1
+                except ValueError:
+                    continue
+            completed += 1
+        except Exception:
+            continue
+
+    total_entries = sum(v[0] for v in gate_stats.values())
+    total_top3    = sum(v[1] for v in gate_stats.values())
+    if total_entries == 0:
+        return {"completed": 0, "gate_bias": {}, "enough_data": False}
+
+    expected_rate = total_top3 / total_entries  # ≈ 3/N
+
+    gate_bias: dict[int, float] = {}
+    for gate, (entries, top3) in gate_stats.items():
+        if entries >= 2:
+            alpha    = 4  # ベイズ平滑化の強さ
+            smoothed = (top3 + expected_rate * alpha) / (entries + alpha)
+            bias     = smoothed / expected_rate
+            gate_bias[gate] = min(max(bias, 0.75), 1.35)  # 外れ値をクリップ
+        else:
+            gate_bias[gate] = 1.0
+
+    return {"completed": completed, "gate_bias": gate_bias, "enough_data": completed >= 3}
+
+
+def format_trend(trend: dict) -> str:
+    """枠番傾向を1行でフォーマット"""
+    if not trend.get("enough_data"):
+        n = trend.get("completed", 0)
+        return f"  今日の傾向: データ不足（{n}レース完了）"
+    bias = trend["gate_bias"]
+    parts = []
+    for gate in range(1, 9):
+        b = bias.get(gate, 1.0)
+        mark = "↑" if b >= 1.10 else ("↓" if b <= 0.90 else "－")
+        parts.append(f"枠{gate}:{b:.2f}{mark}")
+    return f"  今日の傾向({trend['completed']}R完了): " + "  ".join(parts)
 
 
 # ─────────────────────────────────────────────
 # スコアリング & 確率計算
 # ─────────────────────────────────────────────
 
-def calc_top3_probs(horses: list[dict]) -> list[dict]:
-    """各馬に3着内確率を3つの観点で付与して返す。
-    - perf_prob : 成績確率（オッズ無視、当場・当距離・通算のみ）
+def calc_top3_probs(horses: list[dict], today_cond: str = "",
+                    today_trend: dict | None = None) -> list[dict]:
+    """各馬に3着内確率を付与して返す。
+    - perf_prob : 成績確率（通算15%+当場30%+当距離30%+当馬場25%）
     - mkt_prob  : 市場確率（オッズのみ）
-    - top3_prob : 最終3着内確率（両者の幾何平均）
-    いずれも全馬合計が300%になるよう正規化。
+    - top3_prob : 最終3着内確率（幾何平均 × 枠番バイアス）
     """
     n = len(horses)
     if n == 0:
         return horses
 
     base_top3 = 3.0 / n
+    gate_bias = (today_trend or {}).get("gate_bias", {}) if (today_trend or {}).get("enough_data") else {}
 
-    # ── 成績スコア（オッズ無視） ──
     perf_scores = []
     for horse in horses:
         arrival = horse["arrival"]
@@ -236,34 +355,46 @@ def calc_top3_probs(horses: list[dict]) -> list[dict]:
         r_track   = top3_rate(arrival.get("場", (0, 0, 0, 0)), prior=base_top3)
         r_dist    = top3_rate(arrival.get("距", (0, 0, 0, 0)), prior=base_top3)
 
+        # 馬場状態別成績
+        past = horse.get("past_races", [])
+        cond_past = [p for p in past if p.get("track_cond") == today_cond]
+        if cond_past:
+            cond_top3  = sum(1 for p in cond_past if p["pos"] <= 3)
+            alpha      = 3
+            r_cond     = (cond_top3 + base_top3 * alpha) / (len(cond_past) + alpha)
+        else:
+            r_cond = base_top3  # データなし → 均等とみなす
+
         abs_wc = abs(horse["weight_change"])
         weight_factor = 1.0 if abs_wc <= 6 else max(1.0 - (abs_wc - 6) * 0.01, 0.85)
 
-        # 通算20% + 当場40% + 当距離40%（オッズなし）
+        # 通算15% + 当場30% + 当距離30% + 当馬場25%
         log_score = (
-            0.20 * math.log(max(r_overall, 0.01))
-            + 0.40 * math.log(max(r_track,   0.01))
-            + 0.40 * math.log(max(r_dist,    0.01))
+            0.15 * math.log(max(r_overall, 0.01))
+            + 0.30 * math.log(max(r_track,   0.01))
+            + 0.30 * math.log(max(r_dist,    0.01))
+            + 0.25 * math.log(max(r_cond,    0.01))
         )
         perf_scores.append(math.exp(log_score) * weight_factor)
 
-    # ── 市場スコア（オッズのみ） ──
-    mkt_raw = [1.0 / max(h["odds_tan"], 1.01) for h in horses]
-    mkt_sum = sum(mkt_raw)
+    mkt_raw   = [1.0 / max(h["odds_tan"], 1.01) for h in horses]
+    mkt_sum   = sum(mkt_raw)
     mkt_scores = [v / mkt_sum for v in mkt_raw]
 
-    # ── 各スコアを300%に正規化して格納 ──
     perf_sum = sum(perf_scores)
     for i, horse in enumerate(horses):
-        p_perf = perf_scores[i] / perf_sum * 3.0  # 合計3.0（300%）
+        p_perf = perf_scores[i] / perf_sum * 3.0
         p_mkt  = mkt_scores[i] * 3.0
 
-        # 幾何平均で掛け合わせ → 再正規化は後でまとめて行う
-        horse["_combined_raw"] = math.sqrt(p_perf * p_mkt)
+        try:
+            bias = gate_bias.get(int(horse.get("frame", 0)), 1.0)
+        except (ValueError, TypeError):
+            bias = 1.0
+
+        horse["_combined_raw"] = math.sqrt(p_perf * p_mkt) * bias
         horse["perf_prob"] = min(p_perf * 100, 99.9)
         horse["mkt_prob"]  = min(p_mkt  * 100, 99.9)
 
-    # 幾何平均スコアを300%に正規化
     combined_sum = sum(h["_combined_raw"] for h in horses)
     for horse in horses:
         horse["top3_prob"] = min(horse["_combined_raw"] / combined_sum * 3.0 * 100, 99.9)
@@ -418,7 +549,7 @@ def main() -> None:
 
     print(f"\n{'=' * 65}")
     print(f"  {BABA_NAME}競馬 {mode}  {date_disp}")
-    print(f"  ※ 成績確率(通算20%+当場40%+当距離40%) × 市場確率(オッズ) の幾何平均")
+    print(f"  ※ 成績確率(通算15%+当場30%+当距離30%+当馬場25%) × 市場確率 × 枠番傾向")
     print(f"{'=' * 65}\n")
 
     print("レース一覧を取得中...")
@@ -429,6 +560,16 @@ def main() -> None:
         sys.exit(1)
 
     print(f"  {len(races)}レース確認。各レースのデータを取得します...\n")
+
+    # 予想モードのみ今日の傾向を先に取得
+    today_trend: dict | None = None
+    if not args.verify:
+        first_rno = races[0]["race_no"]
+        if first_rno > 1:
+            print("今日の傾向を集計中...")
+            today_trend = get_today_trend(date_str, first_rno)
+            print(format_trend(today_trend))
+            print()
 
     total_hits = 0
     total_races = 0
@@ -445,9 +586,18 @@ def main() -> None:
         print(header)
         print("-" * len(header))
 
+        # レースが進むごとに傾向を更新（予想モードのみ）
+        if not args.verify and today_trend is not None:
+            today_trend = get_today_trend(date_str, rno)
+            print(format_trend(today_trend))
+
         try:
             horses = get_horse_data(date_str, rno)
-            horses = calc_top3_probs(horses)
+            horses = calc_top3_probs(
+                horses,
+                today_cond=race["track_cond"],
+                today_trend=today_trend if not args.verify else None,
+            )
 
             if args.verify:
                 results = get_race_result(date_str, rno)
