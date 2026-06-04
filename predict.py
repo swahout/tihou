@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """名古屋競馬1日予想 - 3着内確率を計算してレース毎に上位5頭を選出"""
 
+import argparse
 import re
 import sys
 import math
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import requests
 from bs4 import BeautifulSoup
@@ -294,15 +295,103 @@ def print_race_prediction(race: dict, horses: list[dict]) -> None:
 
 
 # ─────────────────────────────────────────────
+# 実績取得（検証用）
+# ─────────────────────────────────────────────
+
+def get_race_result(date_str: str, race_no: int) -> list[tuple[int, int, str]]:
+    """実際の着順を返す: [(着順, 馬番, 馬名), ...]"""
+    date_enc = date_str.replace("/", "%2F")
+    url = (
+        f"{BASE_URL}/KeibaWeb/TodayRaceInfo/RaceMarkTable"
+        f"?k_raceDate={date_enc}&k_babaCode={BABA_CODE}&k_raceNo={race_no}"
+    )
+    soup = fetch(url)
+    table = soup.find("table")
+    if not table:
+        return []
+
+    results = []
+    for row in table.find_all("tr")[1:]:
+        cells = [td.get_text(strip=True) for td in row.find_all(["td", "th"])]
+        if len(cells) < 4:
+            continue
+        try:
+            pos = int(cells[0])
+            horse_no = int(cells[2])
+            horse_name = cells[3]
+            results.append((pos, horse_no, horse_name))
+        except ValueError:
+            continue
+    return results
+
+
+def print_race_verification(race: dict, horses: list[dict], results: list[tuple]) -> None:
+    """予測と実績を並べて表示"""
+    if not horses:
+        print("  データなし\n")
+        return
+
+    sorted_horses = sorted(horses, key=lambda h: h["top3_prob"], reverse=True)
+    top5 = sorted_horses[:5]
+    top5_nos = {h["horse_no"] for h in top5}
+    actual_top3_nos = {no for pos, no, _ in results if pos <= 3}
+
+    rows = []
+    for rank, h in enumerate(top5, 1):
+        hit = "◎" if h["horse_no"] in actual_top3_nos else "✗"
+        # 実際の着順
+        actual_pos = next((pos for pos, no, _ in results if no == h["horse_no"]), "-")
+        rows.append([
+            rank,
+            h["horse_no"],
+            h["name"],
+            f"{h['top3_prob']:.1f}%",
+            h["odds_tan"],
+            hit,
+            actual_pos,
+        ])
+
+    headers = ["予測順", "馬番", "馬名", "3着内確率", "単勝", "的中", "実着順"]
+    print(tabulate(rows, headers=headers, tablefmt="simple",
+                   colalign=("right",) * 2 + ("left",) + ("right",) * 2 + ("center", "right")))
+
+    # 実際の3着以内
+    actual_str = "  実績 3着内: " + "  ".join(
+        f"{pos}着 {no}番 {name}" for pos, no, name in sorted(results, key=lambda x: x[0])[:3]
+    )
+    print(actual_str)
+
+    # ヒット数
+    hits = len(top5_nos & actual_top3_nos)
+    print(f"  → 予測上位5頭中 {hits}/3頭 的中\n")
+    return hits
+
+
+# ─────────────────────────────────────────────
 # メイン
 # ─────────────────────────────────────────────
 
 def main() -> None:
-    date_str = datetime.now().strftime("%Y/%m/%d")
-    date_disp = datetime.now().strftime("%Y年%-m月%-d日")
+    parser = argparse.ArgumentParser(description="名古屋競馬予想")
+    parser.add_argument("date", nargs="?", help="対象日 YYYY/MM/DD (省略時=当日)")
+    parser.add_argument("--verify", action="store_true", help="実績と照合して精度検証")
+    args = parser.parse_args()
+
+    if args.date:
+        try:
+            dt = datetime.strptime(args.date, "%Y/%m/%d")
+        except ValueError:
+            print("日付形式エラー: YYYY/MM/DD で指定してください")
+            sys.exit(1)
+    else:
+        dt = datetime.now()
+
+    date_str = dt.strftime("%Y/%m/%d")
+    date_disp = dt.strftime("%Y年%-m月%-d日")
+    mode = "検証" if args.verify else "予想"
 
     print(f"\n{'=' * 65}")
-    print(f"  名古屋競馬 予想  {date_disp}")
+    print(f"  名古屋競馬 {mode}  {date_disp}")
     print(f"  ※ スコア = 市場オッズ60% + 通算成績20% + 当場10% + 当距離10%")
     print(f"{'=' * 65}\n")
 
@@ -310,10 +399,13 @@ def main() -> None:
     races = get_race_list(date_str)
 
     if not races:
-        print(f"本日({date_disp})の名古屋競馬開催情報が見つかりませんでした。")
+        print(f"{date_disp}の名古屋競馬開催情報が見つかりませんでした。")
         sys.exit(1)
 
     print(f"  {len(races)}レース確認。各レースのデータを取得します...\n")
+
+    total_hits = 0
+    total_races = 0
 
     for race in races:
         rno = race["race_no"]
@@ -330,11 +422,29 @@ def main() -> None:
         try:
             horses = get_horse_data(date_str, rno)
             horses = calc_top3_probs(horses)
-            print_race_prediction(race, horses)
+
+            if args.verify:
+                results = get_race_result(date_str, rno)
+                if results:
+                    hits = print_race_verification(race, horses, results)
+                    total_hits += hits
+                    total_races += 1
+                else:
+                    print("  成績データなし（未開催または取得失敗）\n")
+            else:
+                print_race_prediction(race, horses)
+
         except requests.HTTPError as e:
             print(f"  HTTP エラー: {e}\n")
         except Exception as e:
             print(f"  取得エラー: {e}\n")
+
+    if args.verify and total_races > 0:
+        rate = total_hits / (total_races * 3) * 100
+        print("=" * 65)
+        print(f"  【検証サマリー】 {total_races}レース")
+        print(f"  予測上位5頭での3着内カバー率: {total_hits}/{total_races * 3} = {rate:.1f}%")
+        print("=" * 65)
 
 
 if __name__ == "__main__":
