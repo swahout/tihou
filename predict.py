@@ -273,7 +273,7 @@ def print_race_prediction(race: dict, horses: list[dict]) -> None:
         return
 
     sorted_horses = sorted(horses, key=lambda h: h["top3_prob"], reverse=True)
-    top5 = sorted_horses[:5]
+    top5 = sorted_horses[:7]
 
     rows = []
     for rank, h in enumerate(top5, 1):
@@ -332,7 +332,7 @@ def print_race_verification(race: dict, horses: list[dict], results: list[tuple]
         return
 
     sorted_horses = sorted(horses, key=lambda h: h["top3_prob"], reverse=True)
-    top5 = sorted_horses[:5]
+    top5 = sorted_horses[:7]
     top5_nos = {h["horse_no"] for h in top5}
     actual_top3_nos = {no for pos, no, _ in results if pos <= 3}
 
