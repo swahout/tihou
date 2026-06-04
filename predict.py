@@ -201,50 +201,57 @@ def get_horse_data(date_str: str, race_no: int) -> list[dict]:
 # ─────────────────────────────────────────────
 
 def calc_top3_probs(horses: list[dict]) -> list[dict]:
-    """各馬に3着内確率(%)を付与して返す"""
+    """各馬に3着内確率を3つの観点で付与して返す。
+    - perf_prob : 成績確率（オッズ無視、当場・当距離・通算のみ）
+    - mkt_prob  : 市場確率（オッズのみ）
+    - top3_prob : 最終3着内確率（両者の幾何平均）
+    いずれも全馬合計が300%になるよう正規化。
+    """
     n = len(horses)
     if n == 0:
         return horses
 
-    # 単勝オッズから市場インプライド確率を算出 (オーバーラウンド補正あり)
-    p_raw = [1.0 / max(h["odds_tan"], 1.01) for h in horses]
-    p_sum = sum(p_raw)
-    p_market = [p / p_sum for p in p_raw]  # 合計1に正規化
-
-    # 基準となる均等3着内率
     base_top3 = 3.0 / n
 
-    # 各馬のスコアを計算
-    scores = []
-    for i, horse in enumerate(horses):
+    # ── 成績スコア（オッズ無視） ──
+    perf_scores = []
+    for horse in horses:
         arrival = horse["arrival"]
-        overall_rec = arrival.get("全", (0, 0, 0, 0))
-        track_rec = arrival.get("場", (0, 0, 0, 0))
-        dist_rec = arrival.get("距", (0, 0, 0, 0))
+        r_overall = top3_rate(arrival.get("全", (0, 0, 0, 0)), prior=base_top3)
+        r_track   = top3_rate(arrival.get("場", (0, 0, 0, 0)), prior=base_top3)
+        r_dist    = top3_rate(arrival.get("距", (0, 0, 0, 0)), prior=base_top3)
 
-        r_overall = top3_rate(overall_rec, prior=base_top3)
-        r_track = top3_rate(track_rec, prior=base_top3)
-        r_dist = top3_rate(dist_rec, prior=base_top3)
-
-        # 馬体重変動ペナルティ (大きな変動はマイナス)
         abs_wc = abs(horse["weight_change"])
-        weight_factor = 1.0 if abs_wc <= 6 else (1.0 - (abs_wc - 6) * 0.01)
-        weight_factor = max(weight_factor, 0.85)
+        weight_factor = 1.0 if abs_wc <= 6 else max(1.0 - (abs_wc - 6) * 0.01, 0.85)
 
-        # 対数線形スコア: 市場30% + 通算20% + 当場25% + 当距離25%
+        # 通算20% + 当場40% + 当距離40%（オッズなし）
         log_score = (
-            0.30 * math.log(max(p_market[i], 1e-4))
-            + 0.20 * math.log(max(r_overall, 0.01))
-            + 0.25 * math.log(max(r_track, 0.01))
-            + 0.25 * math.log(max(r_dist, 0.01))
+            0.20 * math.log(max(r_overall, 0.01))
+            + 0.40 * math.log(max(r_track,   0.01))
+            + 0.40 * math.log(max(r_dist,    0.01))
         )
-        scores.append(math.exp(log_score) * weight_factor)
+        perf_scores.append(math.exp(log_score) * weight_factor)
 
-    # スコアを正規化: 合計が3になるよう調整 (3頭が3着以内)
-    score_sum = sum(scores)
+    # ── 市場スコア（オッズのみ） ──
+    mkt_raw = [1.0 / max(h["odds_tan"], 1.01) for h in horses]
+    mkt_sum = sum(mkt_raw)
+    mkt_scores = [v / mkt_sum for v in mkt_raw]
+
+    # ── 各スコアを300%に正規化して格納 ──
+    perf_sum = sum(perf_scores)
     for i, horse in enumerate(horses):
-        raw_prob = scores[i] / score_sum * 3.0  # 期待値ベースの3着内確率
-        horse["top3_prob"] = min(raw_prob * 100, 99.9)  # %表記, 上限99.9%
+        p_perf = perf_scores[i] / perf_sum * 3.0  # 合計3.0（300%）
+        p_mkt  = mkt_scores[i] * 3.0
+
+        # 幾何平均で掛け合わせ → 再正規化は後でまとめて行う
+        horse["_combined_raw"] = math.sqrt(p_perf * p_mkt)
+        horse["perf_prob"] = min(p_perf * 100, 99.9)
+        horse["mkt_prob"]  = min(p_mkt  * 100, 99.9)
+
+    # 幾何平均スコアを300%に正規化
+    combined_sum = sum(h["_combined_raw"] for h in horses)
+    for horse in horses:
+        horse["top3_prob"] = min(horse["_combined_raw"] / combined_sum * 3.0 * 100, 99.9)
 
     return horses
 
@@ -265,32 +272,25 @@ def print_race_prediction(race: dict, horses: list[dict]) -> None:
         print("  データなし\n")
         return
 
-    # 3着内確率で降順ソートして上位5頭
     sorted_horses = sorted(horses, key=lambda h: h["top3_prob"], reverse=True)
     top5 = sorted_horses[:5]
 
     rows = []
     for rank, h in enumerate(top5, 1):
-        arrival = h["arrival"]
-        overall = format_record(arrival.get("全"))
-        track = format_record(arrival.get("場"))
-        dist = format_record(arrival.get("距"))
-        wc_str = f"{h['weight_change']:+d}kg" if h["weight_change"] != 0 else "  ---"
         rows.append([
             rank,
             h["horse_no"],
             h["name"],
+            f"{h['perf_prob']:.1f}%",
+            f"{h['mkt_prob']:.1f}%",
             f"{h['top3_prob']:.1f}%",
             h["odds_tan"],
-            overall,
-            track,
-            dist,
-            wc_str,
             h["jockey"],
         ])
 
-    headers = ["順", "馬番", "馬名", "3着内確率", "単勝", "通算", "当場", "当距離", "体重変動", "騎手"]
-    print(tabulate(rows, headers=headers, tablefmt="simple", colalign=("right",) * 2 + ("left",) + ("right",) * 2 + ("left",) * 5))
+    headers = ["順", "馬番", "馬名", "成績確率", "市場確率", "最終3着内確率", "単勝", "騎手"]
+    print(tabulate(rows, headers=headers, tablefmt="simple",
+                   colalign=("right",) * 2 + ("left",) + ("right",) * 5 + ("left",)))
     print()
 
 
@@ -339,21 +339,22 @@ def print_race_verification(race: dict, horses: list[dict], results: list[tuple]
     rows = []
     for rank, h in enumerate(top5, 1):
         hit = "◎" if h["horse_no"] in actual_top3_nos else "✗"
-        # 実際の着順
         actual_pos = next((pos for pos, no, _ in results if no == h["horse_no"]), "-")
         rows.append([
             rank,
             h["horse_no"],
             h["name"],
+            f"{h['perf_prob']:.1f}%",
+            f"{h['mkt_prob']:.1f}%",
             f"{h['top3_prob']:.1f}%",
             h["odds_tan"],
             hit,
             actual_pos,
         ])
 
-    headers = ["予測順", "馬番", "馬名", "3着内確率", "単勝", "的中", "実着順"]
+    headers = ["予測順", "馬番", "馬名", "成績確率", "市場確率", "最終3着内確率", "単勝", "的中", "実着順"]
     print(tabulate(rows, headers=headers, tablefmt="simple",
-                   colalign=("right",) * 2 + ("left",) + ("right",) * 2 + ("center", "right")))
+                   colalign=("right",) * 2 + ("left",) + ("right",) * 5 + ("center", "right")))
 
     # 実際の3着以内
     actual_str = "  実績 3着内: " + "  ".join(
@@ -392,7 +393,7 @@ def main() -> None:
 
     print(f"\n{'=' * 65}")
     print(f"  名古屋競馬 {mode}  {date_disp}")
-    print(f"  ※ スコア = 市場オッズ30% + 通算成績20% + 当場25% + 当距離25%")
+    print(f"  ※ 成績確率(通算20%+当場40%+当距離40%) × 市場確率(オッズ) の幾何平均")
     print(f"{'=' * 65}\n")
 
     print("レース一覧を取得中...")
