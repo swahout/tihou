@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""名古屋競馬1日予想 - 3着内確率を計算してレース毎に上位5頭を選出"""
+"""地方競馬1日予想 - 3着内確率を計算してレース毎に上位7頭を選出"""
 
 import argparse
 import re
@@ -13,8 +13,23 @@ from bs4 import BeautifulSoup
 from tabulate import tabulate
 
 BASE_URL = "https://www.keiba.go.jp"
-BABA_CODE = 24  # 名古屋
+BABA_CODE = 24  # デフォルト: 名古屋
 BABA_NAME = "名古屋"
+
+VENUE_MAP = {
+    "名古屋": 24,
+    "船橋":   19,
+    "大井":   20,
+    "川崎":   21,
+    "浦和":   18,
+    "門別":   36,
+    "園田":   27,
+    "姫路":   28,
+    "金沢":   22,
+    "笠松":   25,
+    "高知":   42,
+    "佐賀":   44,
+}
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -373,10 +388,20 @@ def print_race_verification(race: dict, horses: list[dict], results: list[tuple]
 # ─────────────────────────────────────────────
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="名古屋競馬予想")
+    global BABA_CODE, BABA_NAME
+    parser = argparse.ArgumentParser(description="地方競馬予想")
     parser.add_argument("date", nargs="?", help="対象日 YYYY/MM/DD (省略時=当日)")
+    parser.add_argument("--venue", default="名古屋",
+                        help=f"競馬場名 (デフォルト: 名古屋) 対応: {', '.join(VENUE_MAP)}")
     parser.add_argument("--verify", action="store_true", help="実績と照合して精度検証")
     args = parser.parse_args()
+
+    if args.venue not in VENUE_MAP:
+        print(f"未対応の競馬場: {args.venue}")
+        print(f"対応: {', '.join(VENUE_MAP)}")
+        sys.exit(1)
+    BABA_CODE = VENUE_MAP[args.venue]
+    BABA_NAME = args.venue
 
     if args.date:
         try:
@@ -392,7 +417,7 @@ def main() -> None:
     mode = "検証" if args.verify else "予想"
 
     print(f"\n{'=' * 65}")
-    print(f"  名古屋競馬 {mode}  {date_disp}")
+    print(f"  {BABA_NAME}競馬 {mode}  {date_disp}")
     print(f"  ※ 成績確率(通算20%+当場40%+当距離40%) × 市場確率(オッズ) の幾何平均")
     print(f"{'=' * 65}\n")
 
@@ -400,7 +425,7 @@ def main() -> None:
     races = get_race_list(date_str)
 
     if not races:
-        print(f"{date_disp}の名古屋競馬開催情報が見つかりませんでした。")
+        print(f"{date_disp}の{BABA_NAME}競馬開催情報が見つかりませんでした。")
         sys.exit(1)
 
     print(f"  {len(races)}レース確認。各レースのデータを取得します...\n")
