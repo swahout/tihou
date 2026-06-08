@@ -23,6 +23,31 @@ HEADERS = {
 }
 
 
+def get_race_dates_for_venue(session: "KeibaGoSession", year: int, baba_code: int) -> list[str]:
+    """
+    MonthlyConveneInfo から指定年・場の全開催日を取得。
+    日付文字列リスト ['YYYY/MM/DD', ...] を返す。
+    全日付スキャンより大幅に高速。
+    """
+    import re as _re
+    dates = []
+    for month in range(1, 13):
+        url = (
+            f"{BASE_URL}/KeibaWeb/MonthlyConveneInfo/MonthlyConveneInfoTop"
+            f"?k_year={year}&k_month={month}"
+        )
+        soup = session.get_soup(url)
+        if not soup:
+            continue
+        for a in soup.find_all("a"):
+            href = a.get("href", "")
+            if f"babaCode={baba_code}" in href:
+                m = _re.search(r"raceDate=([\d%2F]+)", href)
+                if m:
+                    dates.append(m.group(1).replace("%2F", "/"))
+    return sorted(set(dates))
+
+
 class KeibaGoSession:
     def __init__(self, delay: float = DEFAULT_DELAY):
         self.delay = delay
@@ -129,7 +154,9 @@ def get_race_entries(session: KeibaGoSession, date_str: str,
             age_str = sex_age[1:].strip() if len(sex_age) > 1 else ""
             age = int(age_str) if age_str.isdigit() else 0
 
+            # 全角カッコを半角に正規化してからパース: 例 "445（+1）" or "445(+1)"
             wc_text = cells[7].strip() if len(cells) > 7 else ""
+            wc_text = wc_text.replace("（", "(").replace("）", ")")
             hw_match = re.match(r"(\d+)\(([+-]?\d+)\)", wc_text)
             if hw_match:
                 horse_weight = int(hw_match.group(1))
@@ -178,6 +205,10 @@ def get_race_results(session: KeibaGoSession, date_str: str,
     if not table:
         return []
 
+    # 実際の列順: [0]=着順,[1]=枠,[2]=馬番,[3]=馬名,[4]=所属,
+    #             [5]=性齢,[6]=負担重量,[7]=騎手,[8]=調教師,
+    #             [9]=馬体重(増減),[10]=タイム,[11]=着差,[12]=上がり3F,
+    #             [13]=コーナー通過順,[14]=人気,[15]=単勝オッズ
     results = []
     for row in table.find_all("tr")[1:]:
         cells = [td.get_text(strip=True) for td in row.find_all(["td", "th"])]
@@ -187,12 +218,25 @@ def get_race_results(session: KeibaGoSession, date_str: str,
             finish_pos = int(cells[0])
             horse_no = int(cells[2])
             horse_name = cells[3].strip()
-            finish_time = cells[4].strip() if len(cells) > 4 else ""
+            finish_time = cells[10].strip() if len(cells) > 10 else ""
+            last_3f = cells[12].strip() if len(cells) > 12 else ""
+            passage_rate = cells[13].strip() if len(cells) > 13 else ""
+            popularity = int(cells[14]) if len(cells) > 14 and cells[14].isdigit() else None
+            # 馬体重: "478(1)" or "478(-7)" 形式
+            hw_text = cells[9].replace("（", "(").replace("）", ")") if len(cells) > 9 else ""
+            hw_m = re.match(r"(\d+)\(([+-]?\d+)\)", hw_text)
+            result_weight = int(hw_m.group(1)) if hw_m else 0
+            result_weight_change = int(hw_m.group(2)) if hw_m else 0
             results.append({
                 "horse_no": horse_no,
                 "horse_name": horse_name,
                 "finish_position": finish_pos,
                 "finish_time": finish_time,
+                "last_3f": last_3f,
+                "passage_rate": passage_rate,
+                "popularity": popularity,
+                "result_weight": result_weight,
+                "result_weight_change": result_weight_change,
             })
         except ValueError:
             continue
