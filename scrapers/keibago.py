@@ -116,83 +116,15 @@ def _parse_course(course_str: str) -> dict:
     return {"distance": distance, "surface": surface, "direction": direction}
 
 
-def get_race_entries(session: KeibaGoSession, date_str: str,
-                     baba_code: int, race_no: int) -> list[dict]:
-    """OddsTanFuku から出走馬情報を取得"""
-    date_enc = date_str.replace("/", "%2F")
-    url = (
-        f"{BASE_URL}/KeibaWeb/TodayRaceInfo/OddsTanFuku"
-        f"?k_raceDate={date_enc}&k_babaCode={baba_code}&k_raceNo={race_no}"
-    )
-    soup = session.get_soup(url)
-    if not soup:
-        return []
-    table = soup.find("table", class_="odd_popular_table_02")
-    if not table:
-        return []
-
-    horses = []
-    for row in table.find_all("tr")[1:]:
-        cells = [td.get_text(strip=True) for td in row.find_all(["td", "th"])]
-        if len(cells) < 9:
-            continue
-        try:
-            horse_no = int(cells[1])
-            waku_str = cells[0].strip()
-            waku = int(waku_str) if waku_str.isdigit() else 0
-
-            odds_str = cells[3].strip()
-            win_odds = None
-            if odds_str and odds_str not in ("---", "", "取消"):
-                try:
-                    win_odds = float(odds_str)
-                except ValueError:
-                    pass
-
-            sex_age = cells[6].strip()
-            sex = sex_age[0] if sex_age else ""
-            age_str = sex_age[1:].strip() if len(sex_age) > 1 else ""
-            age = int(age_str) if age_str.isdigit() else 0
-
-            # 全角カッコを半角に正規化してからパース: 例 "445（+1）" or "445(+1)"
-            wc_text = cells[7].strip() if len(cells) > 7 else ""
-            wc_text = wc_text.replace("（", "(").replace("）", ")")
-            hw_match = re.match(r"(\d+)\(([+-]?\d+)\)", wc_text)
-            if hw_match:
-                horse_weight = int(hw_match.group(1))
-                weight_change = int(hw_match.group(2))
-            else:
-                horse_weight = 0
-                c_match = re.search(r"([+-]?\d+)", wc_text)
-                weight_change = int(c_match.group(1)) if c_match else 0
-
-            burden_str = cells[8].strip() if len(cells) > 8 else ""
-            weight_carried = float(burden_str) if burden_str else 0.0
-
-            jockey = re.sub(r"[▲◇★☆△〇]", "", cells[9]).strip() if len(cells) > 9 else ""
-            trainer = cells[11].strip() if len(cells) > 11 else ""
-
-            horses.append({
-                "horse_no": horse_no,
-                "waku": waku,
-                "horse_name": cells[2].strip(),
-                "win_odds": win_odds,
-                "sex": sex,
-                "age": age,
-                "horse_weight": horse_weight,
-                "weight_change": weight_change,
-                "weight_carried": weight_carried,
-                "jockey": jockey,
-                "trainer": trainer,
-            })
-        except (ValueError, IndexError):
-            continue
-    return horses
-
-
-def get_race_results(session: KeibaGoSession, date_str: str,
-                     baba_code: int, race_no: int) -> list[dict]:
-    """RaceMarkTable から着順を取得"""
+def get_race_data(session: KeibaGoSession, date_str: str,
+                  baba_code: int, race_no: int) -> list[dict]:
+    """RaceMarkTable から出走馬情報と結果を一括取得。
+    OddsTanFuku は過去データで取得不可のため廃止。
+    列順: [0]=着順,[1]=枠,[2]=馬番,[3]=馬名,[4]=所属,
+          [5]=性齢,[6]=負担重量,[7]=騎手,[8]=調教師,
+          [9]=馬体重(増減),[10]=タイム,[11]=着差,[12]=上がり3F,
+          [13]=コーナー通過順,[14]=人気,[15]=単勝オッズ
+    """
     date_enc = date_str.replace("/", "%2F")
     url = (
         f"{BASE_URL}/KeibaWeb/TodayRaceInfo/RaceMarkTable"
@@ -205,39 +137,94 @@ def get_race_results(session: KeibaGoSession, date_str: str,
     if not table:
         return []
 
-    # 実際の列順: [0]=着順,[1]=枠,[2]=馬番,[3]=馬名,[4]=所属,
-    #             [5]=性齢,[6]=負担重量,[7]=騎手,[8]=調教師,
-    #             [9]=馬体重(増減),[10]=タイム,[11]=着差,[12]=上がり3F,
-    #             [13]=コーナー通過順,[14]=人気,[15]=単勝オッズ
-    results = []
+    horses = []
     for row in table.find_all("tr")[1:]:
         cells = [td.get_text(strip=True) for td in row.find_all(["td", "th"])]
         if len(cells) < 4:
             continue
         try:
-            finish_pos = int(cells[0])
+            finish_pos_str = cells[0].strip()
+            finish_pos = int(finish_pos_str) if finish_pos_str.isdigit() else None
+            waku = int(cells[1]) if cells[1].isdigit() else 0
             horse_no = int(cells[2])
             horse_name = cells[3].strip()
+
+            sex_age = cells[5].strip() if len(cells) > 5 else ""
+            # 性齢: "牡 4" or "牡4"
+            sex_age_clean = sex_age.replace("　", "").replace(" ", "")
+            sex = sex_age_clean[0] if sex_age_clean else ""
+            age_str = sex_age_clean[1:] if len(sex_age_clean) > 1 else ""
+            age = int(age_str) if age_str.isdigit() else 0
+
+            burden_str = cells[6].strip() if len(cells) > 6 else ""
+            weight_carried = float(burden_str) if burden_str else 0.0
+
+            jockey_raw = cells[7].strip() if len(cells) > 7 else ""
+            jockey = re.sub(r"（[^）]*）", "", jockey_raw).strip()
+            jockey = re.sub(r"[▲◇★☆△〇]", "", jockey).strip()
+
+            trainer = cells[8].strip() if len(cells) > 8 else ""
+
+            hw_text = cells[9].replace("（", "(").replace("）", ")") if len(cells) > 9 else ""
+            hw_m = re.match(r"(\d+)\(([+-]?\d+)\)", hw_text)
+            horse_weight = int(hw_m.group(1)) if hw_m else 0
+            weight_change = int(hw_m.group(2)) if hw_m else 0
+
             finish_time = cells[10].strip() if len(cells) > 10 else ""
             last_3f = cells[12].strip() if len(cells) > 12 else ""
             passage_rate = cells[13].strip() if len(cells) > 13 else ""
             popularity = int(cells[14]) if len(cells) > 14 and cells[14].isdigit() else None
-            # 馬体重: "478(1)" or "478(-7)" 形式
-            hw_text = cells[9].replace("（", "(").replace("）", ")") if len(cells) > 9 else ""
-            hw_m = re.match(r"(\d+)\(([+-]?\d+)\)", hw_text)
-            result_weight = int(hw_m.group(1)) if hw_m else 0
-            result_weight_change = int(hw_m.group(2)) if hw_m else 0
-            results.append({
+            odds_str = cells[15].strip() if len(cells) > 15 else ""
+            win_odds = None
+            if odds_str and odds_str not in ("---", "", "取消"):
+                try:
+                    win_odds = float(odds_str)
+                except ValueError:
+                    pass
+
+            horses.append({
                 "horse_no": horse_no,
+                "waku": waku,
                 "horse_name": horse_name,
+                "sex": sex,
+                "age": age,
+                "weight_carried": weight_carried,
+                "jockey": jockey,
+                "trainer": trainer,
+                "horse_weight": horse_weight,
+                "weight_change": weight_change,
+                "win_odds": win_odds,
                 "finish_position": finish_pos,
                 "finish_time": finish_time,
                 "last_3f": last_3f,
                 "passage_rate": passage_rate,
                 "popularity": popularity,
-                "result_weight": result_weight,
-                "result_weight_change": result_weight_change,
+                "result_weight": horse_weight,
+                "result_weight_change": weight_change,
             })
-        except ValueError:
+        except (ValueError, IndexError):
             continue
-    return results
+    return horses
+
+
+def get_race_entries(session: KeibaGoSession, date_str: str,
+                     baba_code: int, race_no: int) -> list[dict]:
+    """後方互換ラッパー: get_race_data を呼ぶ"""
+    return get_race_data(session, date_str, baba_code, race_no)
+
+
+def get_race_results(session: KeibaGoSession, date_str: str,
+                     baba_code: int, race_no: int) -> list[dict]:
+    """後方互換ラッパー: get_race_data を呼ぶ（結果フィールドのみ返す）"""
+    data = get_race_data(session, date_str, baba_code, race_no)
+    return [{
+        "horse_no": h["horse_no"],
+        "horse_name": h["horse_name"],
+        "finish_position": h["finish_position"],
+        "finish_time": h["finish_time"],
+        "last_3f": h["last_3f"],
+        "passage_rate": h["passage_rate"],
+        "popularity": h["popularity"],
+        "result_weight": h["result_weight"],
+        "result_weight_change": h["result_weight_change"],
+    } for h in data]

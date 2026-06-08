@@ -18,7 +18,7 @@ from pathlib import Path
 from scrapers.keibago import (
     KeibaGoSession, VENUE_MAP,
     get_race_dates_for_venue, get_race_list,
-    get_race_entries, get_race_results,
+    get_race_data,
 )
 
 VENUE = "大井"
@@ -45,17 +45,13 @@ def collect_one_date(session: KeibaGoSession, date_str: str) -> list[dict]:
     rows = []
     for race in races:
         rno = race["race_no"]
-        entries = get_race_entries(session, date_str, BABA_CODE, rno)
-        results = get_race_results(session, date_str, BABA_CODE, rno)
+        horses = get_race_data(session, date_str, BABA_CODE, rno)
 
-        if not entries:
+        if not horses:
             continue
 
-        result_map = {r["horse_no"]: r for r in results}
-        field_size = len(entries)
-
-        for h in entries:
-            res = result_map.get(h["horse_no"], {})
+        field_size = len(horses)
+        for h in horses:
             rows.append({
                 "race_date": date_str,
                 "venue": VENUE,
@@ -78,13 +74,13 @@ def collect_one_date(session: KeibaGoSession, date_str: str) -> list[dict]:
                 "jockey": h["jockey"],
                 "trainer": h["trainer"],
                 "win_odds": h["win_odds"],
-                "finish_position": res.get("finish_position", ""),
-                "finish_time": res.get("finish_time", ""),
-                "last_3f": res.get("last_3f", ""),
-                "passage_rate": res.get("passage_rate", ""),
-                "popularity": res.get("popularity", ""),
-                "result_weight": res.get("result_weight", ""),
-                "result_weight_change": res.get("result_weight_change", ""),
+                "finish_position": h.get("finish_position", ""),
+                "finish_time": h.get("finish_time", ""),
+                "last_3f": h.get("last_3f", ""),
+                "passage_rate": h.get("passage_rate", ""),
+                "popularity": h.get("popularity", ""),
+                "result_weight": h.get("result_weight", ""),
+                "result_weight_change": h.get("result_weight_change", ""),
             })
     return rows
 
