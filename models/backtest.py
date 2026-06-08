@@ -29,7 +29,11 @@ def _build_train_features(
         if len(grp) < 4:
             continue
         try:
-            X_r = build_features(grp, df_train, params)
+            race_date = grp["race_date"].iloc[0]
+            df_hist = df_train[df_train["race_date"] < race_date]
+            if df_hist.empty:
+                continue
+            X_r = build_features(grp, df_hist, params)
             Xs.append(X_r)
             ys.extend(grp["finish_position"].astype(int).tolist())
             rids.extend([rid] * len(grp))
