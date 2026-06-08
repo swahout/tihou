@@ -12,7 +12,7 @@ def _build_race_id(df: pd.DataFrame) -> pd.Series:
         pd.to_datetime(df["race_date"]).dt.strftime("%Y%m%d")
         + "_" + df["venue"].fillna("")
         + "_" + df["race_no"].astype(str)
-    ).reset_index(drop=True)
+    )
 
 
 def _build_train_features(

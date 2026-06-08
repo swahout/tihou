@@ -106,13 +106,16 @@ def predict_ensemble(
     w = weights or {"lgb": 0.40, "xgb": 0.25, "rf": 0.20, "lr": 0.15}
     X = X_pred[models["feature_cols"]].values
 
-    p_lgb = models["lgb"].predict_proba(X)[:, 1]
-    p_xgb_raw = models["xgb"].predict(X)
-    rng = p_xgb_raw.max() - p_xgb_raw.min()
-    p_xgb = (p_xgb_raw - p_xgb_raw.min()) / (rng + 1e-9)
-    p_rf = models["rf"].predict_proba(X)[:, 1]
-    X_sc = models["scaler"].transform(X)
-    p_lr = models["lr"].predict_proba(X_sc)[:, 1]
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        p_lgb = models["lgb"].predict_proba(X)[:, 1]
+        p_xgb_raw = models["xgb"].predict(X)
+        rng = p_xgb_raw.max() - p_xgb_raw.min()
+        p_xgb = (p_xgb_raw - p_xgb_raw.min()) / (rng + 1e-9)
+        p_rf = models["rf"].predict_proba(X)[:, 1]
+        X_sc = models["scaler"].transform(X)
+        p_lr = models["lr"].predict_proba(X_sc)[:, 1]
 
     return (
         w["lgb"] * p_lgb

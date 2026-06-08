@@ -29,8 +29,9 @@ SAVED_DIR.mkdir(parents=True, exist_ok=True)
 
 PARAMS_PATH = SAVED_DIR / "oi_best_params.json"
 DB_PATH = SAVED_DIR / "oi_optuna.db"
-STUDY_NAME = "oi_top3_top5_coverage_v1"
+STUDY_NAME = "oi_top3_top5_coverage_v2"  # v2: 直近年重視の加重目標関数
 METRIC = "top5_coverage"
+DATA_RELIABILITY_K = 10  # umaの知見: K=5より保守的なK=10が過小評価を防ぐ
 
 
 def load_history() -> pd.DataFrame:
@@ -79,7 +80,12 @@ def do_tune(df_all: pd.DataFrame, n_trials: int) -> dict:
         result = run_backtest(df_all, params=params, weights=weights, verbose=False)
         if "error" in result:
             return 0.0
-        return result[METRIC]
+        # 直近年を指数的に重視: 最古=1x, ..., 最新=2^(n-1)x
+        year_results = sorted(result.get("year_results", []), key=lambda x: x["test_year"])
+        if not year_results:
+            return 0.0
+        w = [2 ** i for i in range(len(year_results))]
+        return sum(m["top5_coverage"] * wi for m, wi in zip(year_results, w)) / sum(w)
 
     study = tune(objective, STUDY_NAME, DB_PATH, n_trials=n_trials)
     best = study.best_params
@@ -139,10 +145,14 @@ def do_predict(df_all: pd.DataFrame, date_str: str, params: dict | None) -> None
             len(df_train[df_train["horse_name"] == name])
             for name in race_df["horse_name"]
         ]
-        race_df["data_reliability"] = race_df["n_hist"] / (race_df["n_hist"] + 5)
-        # top3_prob: スコアを確率に正規化（3/field_size の和になるよう）
+        race_df["data_reliability"] = race_df["n_hist"] / (race_df["n_hist"] + DATA_RELIABILITY_K)
+        # top3_prob: スコア正規化 → 信頼度補正（データ少ない馬はベースレートに引き戻す）
         total = scores.sum()
-        race_df["top3_prob"] = scores / total * 3.0 if total > 0 else scores
+        base_rate = 3.0 / max(len(race_df), 1)
+        raw_prob = scores / total * 3.0 if total > 0 else np.ones(len(scores)) * base_rate
+        rel = race_df["data_reliability"].values
+        race_df["top3_prob_raw"] = raw_prob
+        race_df["top3_prob"] = raw_prob * rel + base_rate * (1 - rel)
         out_rows.append(race_df)
 
     if not out_rows:
