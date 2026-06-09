@@ -15,7 +15,7 @@ FEATURE_COLS = [
     "days_since_last",
     "sex_enc", "age", "weight_carried", "weight_change", "horse_weight",
     "umaban", "waku", "field_size", "distance_f",
-    "win_odds", "data_reliability",
+    "data_reliability",
 ]
 
 SEX_MAP = {"牡": 0, "牝": 1, "騸": 2, "セ": 2}
@@ -305,7 +305,6 @@ def build_features_precomputed(
     horse_weight = col_arr("horse_weight", 480)
     umaban = col_arr("horse_no", 0)
     waku = col_arr("waku", 0)
-    win_odds = col_arr("win_odds", 30.0)
     data_reliability = n_total / (n_total + 5)
 
     out = pd.DataFrame({
@@ -337,7 +336,6 @@ def build_features_precomputed(
         "waku": waku,
         "field_size": float(field_size),
         "distance_f": float(distance) if distance else 0.0,
-        "win_odds": win_odds,
         "data_reliability": data_reliability,
     })
     return out[FEATURE_COLS]
@@ -375,7 +373,6 @@ def _empty_features(df_race, base_rate, field_size, distance):
     df["trainer_top3_rate"] = 0.3
     df["days_since_last"] = 60.0
     df["distance_f"] = float(distance) if distance else 0.0
-    df["win_odds"] = 30.0
     df["field_size"] = float(field_size)
     if "age" in df_race.columns:
         df["age"] = df_race["age"].fillna(4).values

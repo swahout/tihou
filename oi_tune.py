@@ -29,7 +29,7 @@ SAVED_DIR.mkdir(parents=True, exist_ok=True)
 
 PARAMS_PATH = SAVED_DIR / "oi_best_params.json"
 DB_PATH = SAVED_DIR / "oi_optuna.db"
-STUDY_NAME = "oi_top3_top5_coverage_v2"  # v2: 直近年重視の加重目標関数
+STUDY_NAME = "oi_top3_top5_coverage_v3"  # v3: win_odds除外(99.7%NaN) + 2026データ追加
 METRIC = "top5_coverage"
 DATA_RELIABILITY_K = 10  # umaの知見: K=5より保守的なK=10が過小評価を防ぐ
 
