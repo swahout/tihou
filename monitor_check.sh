@@ -11,7 +11,7 @@ while true; do
   fi
   STATS=$(python -c "
 import optuna; optuna.logging.set_verbosity(optuna.logging.WARNING)
-s = optuna.load_study(study_name='oi_top3_top5_coverage_v2', storage='sqlite:///models/saved/oi_optuna.db')
+s = optuna.load_study(study_name='oi_top3_top5_coverage_v4', storage='sqlite:///models/saved/oi_optuna.db')
 print(f'trials={len(s.trials)}, best={s.best_value:.4f}')
 " 2>/dev/null)
   if git diff --quiet models/saved/oi_optuna.db 2>/dev/null; then

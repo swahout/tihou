@@ -140,7 +140,7 @@ tihou/
 
 ---
 
-## 特徴量一覧
+## 特徴量一覧（v4: 33特徴量）
 
 ```
 # 成績系（ベイズ平滑化 k=8）
@@ -172,11 +172,17 @@ umaban / waku / field_size / distance
 # 休養
 days_since_last_race
 
-# 市場
-win_odds
-
 # メタ
 data_reliability       n / (n + 5)  0=初出走, 0.5=5戦, 0.8=20戦
+
+# v4追加: 速度指数・脚質・上がり（98.9%カバレッジ）
+avg_speed_idx          馬の平均相対速度 (1.0=レース平均, >1=速い)
+best_speed_idx         馬の上位3走平均速度 (ceiling性能)
+avg_corner_rate        最終コーナー通過順÷頭数 (0=逃げ, 1=追い込み)
+avg_rel_last3f         上がり3F÷レース平均 (1.0未満=キックが強い)
+
+# 廃止
+# win_odds             99.7%がNaN → v3で除外
 ```
 
 ---
@@ -186,12 +192,21 @@ data_reliability       n / (n + 5)  0=初出走, 0.5=5戦, 0.8=20戦
 特徴量を追加・変更した場合は必ずスタディ名をインクリメントすること。
 
 ```python
-study_name = "oi_top3_top5_coverage_v1"  # v1, v2, v3...
+study_name = "oi_top3_top5_coverage_v4"  # v1, v2, v3...
 ```
 
 **理由**: 特徴量構成が変わると過去の試行（異なる特徴空間）とTPEサンプラーが混在し最適化が混乱する。
 
 スタディのDBは `models/saved/oi_optuna.db` に保存。
+
+### スタディ履歴
+
+| バージョン | 変更内容 | 特徴量数 | 最高 top5_coverage |
+|-----------|---------|---------|-------------------|
+| v1 | 初期構築 | 30 | ― |
+| v2 | 高速化（precompute_stats）、win_odds保持 | 30 | ― |
+| v3 | win_odds除外(99.7%NaN)、2026データ追加(71テストレース) | 29 | 70.4% (214試行) |
+| v4 | 速度指数(avg_speed_idx, best_speed_idx)・脚質(avg_corner_rate)・上がり3F(avg_rel_last3f)追加 | 33 | チューニング中 |
 
 ---
 

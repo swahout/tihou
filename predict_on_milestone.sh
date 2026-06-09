@@ -9,7 +9,7 @@ while true; do
   
   TRIALS=$(python -c "
 import optuna; optuna.logging.set_verbosity(optuna.logging.WARNING)
-s = optuna.load_study(study_name='oi_top3_top5_coverage_v3', storage='sqlite:///models/saved/oi_optuna.db')
+s = optuna.load_study(study_name='oi_top3_top5_coverage_v4', storage='sqlite:///models/saved/oi_optuna.db')
 print(len([t for t in s.trials if t.value is not None]))
 " 2>/dev/null)
   
@@ -21,7 +21,7 @@ print(len([t for t in s.trials if t.value is not None]))
     LAST_MILESTONE=$MILESTONE
     BEST=$(python -c "
 import optuna; optuna.logging.set_verbosity(optuna.logging.WARNING)
-s = optuna.load_study(study_name='oi_top3_top5_coverage_v3', storage='sqlite:///models/saved/oi_optuna.db')
+s = optuna.load_study(study_name='oi_top3_top5_coverage_v4', storage='sqlite:///models/saved/oi_optuna.db')
 print(f'{s.best_value:.4f}')
 " 2>/dev/null)
     echo "=== ${MILESTONE}試行達成 (best=${BEST}) → 予測実行 ==="
