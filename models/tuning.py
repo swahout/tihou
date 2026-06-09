@@ -22,7 +22,7 @@ def tune(
         direction=direction,
         load_if_exists=True,
     )
-    study.optimize(objective_fn, n_trials=n_trials, show_progress_bar=True)
+    study.optimize(objective_fn, n_trials=n_trials, show_progress_bar=False)
     return study
 
 

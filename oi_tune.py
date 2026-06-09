@@ -77,15 +77,15 @@ def do_tune(df_all: pd.DataFrame, n_trials: int) -> dict:
     def objective(trial):
         params = suggest_params(trial)
         weights = params_to_weights(params)
-        result = run_backtest(df_all, params=params, weights=weights, verbose=False)
+        # 直近30日をテストセットとして高速評価
+        result = run_backtest(df_all, params=params, weights=weights,
+                              verbose=False, test_days=30)
         if "error" in result:
             return 0.0
-        # 直近年を指数的に重視: 最古=1x, ..., 最新=2^(n-1)x
-        year_results = sorted(result.get("year_results", []), key=lambda x: x["test_year"])
-        if not year_results:
-            return 0.0
-        w = [2 ** i for i in range(len(year_results))]
-        return sum(m["top5_coverage"] * wi for m, wi in zip(year_results, w)) / sum(w)
+        score = result["top5_coverage"]
+        if trial.number % 10 == 0:
+            print(f"  trial {trial.number}: score={score:.4f}", flush=True)
+        return score
 
     study = tune(objective, STUDY_NAME, DB_PATH, n_trials=n_trials)
     best = study.best_params
