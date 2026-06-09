@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+"""大井競馬 当日出走表収集
+
+Usage:
+    python collect_oi_shutuba.py                    # 当日
+    python collect_oi_shutuba.py --date 2026/06/10  # 指定日
+
+出力: data/races/oi_{YYYY}_{MMDD}_shutuba.csv
+"""
+import argparse
+import csv
+from datetime import datetime
+from pathlib import Path
+
+from scrapers.keibago import KeibaGoSession, VENUE_MAP, get_race_list, get_race_entries
+
+VENUE = "大井"
+BABA_CODE = VENUE_MAP[VENUE]
+OUT_DIR = Path("data/races")
+OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+FIELDNAMES = [
+    "race_date", "venue", "race_no", "race_name",
+    "distance", "surface", "direction", "track_cond", "weather",
+    "field_size", "waku", "horse_no", "horse_name",
+    "sex", "age", "weight_carried", "horse_weight", "weight_change",
+    "jockey", "trainer", "win_odds",
+]
+
+
+def main():
+    parser = argparse.ArgumentParser(description="大井競馬 出走表収集")
+    parser.add_argument("--date", help="対象日 YYYY/MM/DD（省略時=当日）")
+    args = parser.parse_args()
+
+    date_str = args.date or datetime.now().strftime("%Y/%m/%d")
+    session = KeibaGoSession(delay=1.2)
+
+    print(f"{VENUE} {date_str} 出走表取得中...")
+    races = get_race_list(session, date_str, BABA_CODE)
+    if not races:
+        print("開催なし または 取得失敗")
+        return
+
+    rows = []
+    for race in races:
+        rno = race["race_no"]
+        entries = get_race_entries(session, date_str, BABA_CODE, rno)
+        if not entries:
+            continue
+        field_size = len(entries)
+        for h in entries:
+            rows.append({
+                "race_date": date_str,
+                "venue": VENUE,
+                "race_no": rno,
+                "race_name": race["race_name"],
+                "distance": race["distance"],
+                "surface": race["surface"],
+                "direction": race["direction"],
+                "track_cond": race["track_cond"],
+                "weather": race["weather"],
+                "field_size": field_size,
+                "waku": h["waku"],
+                "horse_no": h["horse_no"],
+                "horse_name": h["horse_name"],
+                "sex": h["sex"],
+                "age": h["age"],
+                "weight_carried": h["weight_carried"],
+                "horse_weight": h["horse_weight"],
+                "weight_change": h["weight_change"],
+                "jockey": h["jockey"],
+                "trainer": h["trainer"],
+                "win_odds": h["win_odds"],
+            })
+
+    dt = datetime.strptime(date_str, "%Y/%m/%d")
+    fname = f"oi_{dt.strftime('%Y_%m%d')}_shutuba.csv"
+    out_path = OUT_DIR / fname
+    with open(out_path, "w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    print(f"{len(races)}レース {len(rows)}頭 → {out_path}")
+
+
+if __name__ == "__main__":
+    main()
