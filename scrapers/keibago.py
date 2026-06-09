@@ -207,6 +207,104 @@ def get_race_data(session: KeibaGoSession, date_str: str,
     return horses
 
 
+def get_deba_entries(session: KeibaGoSession, date_str: str,
+                     baba_code: int, race_no: int) -> list[dict]:
+    """
+    DebaTable から出走表を取得（レース前の当日出走表収集用）。
+    RaceMarkTable はレース前は空になるため、出走表には DebaTable を使う。
+
+    各馬ブロックは11行構成:
+      row+0 (38cells): waku, horse_no, horse_name, jockey(所属), odds, stats...
+      row+7 (6cells) : sex+age, 毛色, 生年月日, weight_carried+成績, クラス...
+      row+8 (7cells) : 父馬, trainer(所属), ...
+    """
+    date_enc = date_str.replace("/", "%2F")
+    url = (
+        f"{BASE_URL}/KeibaWeb/TodayRaceInfo/DebaTable"
+        f"?k_raceDate={date_enc}&k_babaCode={baba_code}&k_raceNo={race_no}"
+    )
+    soup = session.get_soup(url)
+    if not soup:
+        return []
+    tables = soup.find_all("table")
+    if not tables:
+        return []
+    table = tables[0]
+    rows = table.find_all("tr")
+
+    BLOCK = 11  # 1頭あたりの行数
+    START = 2   # ヘッダー2行をスキップ
+
+    horses = []
+    i = START
+    while i + BLOCK <= len(rows):
+        main_cells = [c.get_text(strip=True) for c in rows[i].find_all(["td", "th"])]
+        if len(main_cells) < 5:
+            i += 1
+            continue
+
+        # row+7: sex/age, 毛色, 生年月日, weight_carried...
+        info_cells = [c.get_text(strip=True) for c in rows[i + 7].find_all(["td", "th"])]
+        # row+8: 父馬, trainer(所属)...
+        trainer_cells = [c.get_text(strip=True) for c in rows[i + 8].find_all(["td", "th"])]
+
+        try:
+            waku = int(main_cells[0])
+            horse_no = int(main_cells[1])
+            horse_name = main_cells[2]
+
+            # 騎手: '岡村健（船橋）' → '岡村健'
+            jockey_raw = main_cells[3]
+            jockey = jockey_raw.split("（")[0].strip() if "（" in jockey_raw else jockey_raw
+
+            # オッズ（レース前は空のことが多い）
+            win_odds_raw = main_cells[4] if len(main_cells) > 4 else ""
+            try:
+                win_odds = float(win_odds_raw)
+            except (ValueError, TypeError):
+                win_odds = None
+
+            # sex/age: 'セン8' → sex='セン', age=8 / '牡5' → sex='牡', age=5
+            sex_age = info_cells[0] if info_cells else ""
+            sex = sex_age.rstrip("0123456789") or ""
+            try:
+                age = int(sex_age[len(sex):])
+            except (ValueError, IndexError):
+                age = None
+
+            # weight_carried: info_cells[3] like '56.0　1-3-3-16' → 56.0
+            wc_raw = info_cells[3] if len(info_cells) > 3 else ""
+            try:
+                weight_carried = float(wc_raw.split("　")[0].split()[0])
+            except (ValueError, IndexError):
+                weight_carried = None
+
+            # trainer: '遠藤茂（大井）' → '遠藤茂'
+            trainer_raw = trainer_cells[1] if len(trainer_cells) > 1 else ""
+            trainer = trainer_raw.split("（")[0].strip() if "（" in trainer_raw else trainer_raw
+
+        except (ValueError, IndexError):
+            i += BLOCK
+            continue
+
+        horses.append({
+            "waku": waku,
+            "horse_no": horse_no,
+            "horse_name": horse_name,
+            "jockey": jockey,
+            "win_odds": win_odds,
+            "sex": sex,
+            "age": age,
+            "weight_carried": weight_carried,
+            "horse_weight": None,   # レース前は不明
+            "weight_change": None,  # レース前は不明
+            "trainer": trainer,
+        })
+        i += BLOCK
+
+    return horses
+
+
 def get_race_entries(session: KeibaGoSession, date_str: str,
                      baba_code: int, race_no: int) -> list[dict]:
     """後方互換ラッパー: get_race_data を呼ぶ"""
