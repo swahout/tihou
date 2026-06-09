@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 from typing import Optional
 
-from models.features import build_features, FEATURE_COLS
+from models.features import build_features, precompute_stats, build_features_precomputed, FEATURE_COLS
 from models.ensemble import train_ensemble, predict_ensemble
 
 
@@ -18,18 +18,23 @@ def _build_race_id(df: pd.DataFrame) -> pd.Series:
 def _build_train_features(
     df_train: pd.DataFrame,
     params: Optional[dict] = None,
+    stats: Optional[dict] = None,
 ) -> tuple[pd.DataFrame, pd.Series, pd.Series]:
-    """訓練データ全体から特徴量・ターゲット・レースIDを構築"""
+    """訓練データ全体から特徴量・ターゲット・レースIDを構築（集計を1回だけ計算）"""
     race_id_col = _build_race_id(df_train)
     df_train = df_train.copy()
     df_train["race_id"] = race_id_col
+
+    # 集計を一度だけ計算（呼び出し元で計算済みの場合は再利用）
+    if stats is None:
+        stats = precompute_stats(df_train, params)
 
     Xs, ys, rids = [], [], []
     for rid, grp in df_train.groupby("race_id"):
         if len(grp) < 4:
             continue
         try:
-            X_r = build_features(grp, df_train, params)
+            X_r = build_features_precomputed(grp, stats, params)
             Xs.append(X_r)
             ys.extend(grp["finish_position"].astype(int).tolist())
             rids.extend([rid] * len(grp))
@@ -46,7 +51,10 @@ def _eval_split(df_train, df_test, params, weights, verbose, label):
     if len(df_train) < 200 or len(df_test) < 20:
         return None
 
-    X_train, y_train, rids_train = _build_train_features(df_train, params)
+    # 集計を一度だけ計算（訓練・テスト両方で再利用）
+    train_stats = precompute_stats(df_train, params)
+
+    X_train, y_train, rids_train = _build_train_features(df_train, params, stats=train_stats)
     if X_train.empty:
         return None
 
@@ -65,7 +73,7 @@ def _eval_split(df_train, df_test, params, weights, verbose, label):
         if len(race_df) < 4:
             continue
         try:
-            X_test = build_features(race_df, df_train, params)
+            X_test = build_features_precomputed(race_df, train_stats, params)
             scores = predict_ensemble(models, X_test, weights)
         except Exception:
             continue
