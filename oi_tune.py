@@ -108,11 +108,12 @@ def do_predict(df_all: pd.DataFrame, date_str: str, params: dict | None) -> None
     df_shutuba["race_date"] = pd.to_datetime(df_shutuba["race_date"])
     print(f"\n出走表: {shutuba_path} ({len(df_shutuba)}頭)")
 
-    # 訓練データ（予測対象日の前年以前）
-    pred_year = dt.year
-    df_train = df_all[df_all["race_date"].dt.year < pred_year].copy()
+    # 訓練データ（予測対象日より前の全データ）
+    # バックテストと違い実運用では予測日前日までの全データを使用可能
+    pred_date = pd.Timestamp(dt)
+    df_train = df_all[df_all["race_date"] < pred_date].copy()
     if df_train.empty:
-        print(f"警告: {pred_year}年より前の訓練データがありません。全データで学習します。")
+        print(f"警告: {date_str}より前の訓練データがありません。全データで学習します。")
         df_train = df_all.copy()
 
     # 特徴量構築・モデル学習
