@@ -34,6 +34,9 @@ METRIC = "top5_coverage"
 DATA_RELIABILITY_K = 10  # umaの知見: K=5より保守的なK=10が過小評価を防ぐ
 
 
+OTHERS_DIR = Path("data/historical_others")
+
+
 def load_history() -> pd.DataFrame:
     csvs = sorted(HIST_DIR.glob("oi_*.csv"))
     if not csvs:
@@ -48,12 +51,25 @@ def load_history() -> pd.DataFrame:
             dfs.append(df)
         except Exception as e:
             print(f"  警告: {csv} 読み込み失敗 ({e})")
+
+    # 他馬場データ（存在すれば追加）
+    other_csvs = sorted(OTHERS_DIR.glob("*.csv")) if OTHERS_DIR.exists() else []
+    for csv in other_csvs:
+        try:
+            df = pd.read_csv(csv, encoding="utf-8-sig")
+            dfs.append(df)
+        except Exception as e:
+            print(f"  警告: {csv} 読み込み失敗 ({e})")
+    if other_csvs:
+        print(f"  他馬場データ: {len(other_csvs)}ファイル読み込み")
+
     df_all = pd.concat(dfs, ignore_index=True)
     df_all["race_date"] = pd.to_datetime(df_all["race_date"])
     df_all["finish_position"] = pd.to_numeric(df_all["finish_position"], errors="coerce")
     df_all = df_all[df_all["finish_position"].notna()].copy()
     df_all["finish_position"] = df_all["finish_position"].astype(int)
-    print(f"履歴データ: {len(df_all)}行 ({df_all['race_date'].dt.year.min()}〜{df_all['race_date'].dt.year.max()})")
+    venues = df_all["venue"].unique().tolist()
+    print(f"履歴データ: {len(df_all)}行 ({df_all['race_date'].dt.year.min()}〜{df_all['race_date'].dt.year.max()}) 馬場: {venues}")
     return df_all
 
 
