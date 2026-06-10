@@ -15,10 +15,38 @@ FEATURE_COLS = [
     "days_since_last",
     "sex_enc", "age", "weight_carried", "weight_change", "horse_weight",
     "umaban", "waku", "field_size", "distance_f",
-    "win_odds", "data_reliability",
+    "data_reliability",
 ]
 
 SEX_MAP = {"牡": 0, "牝": 1, "騸": 2, "セ": 2}
+
+
+def _parse_time(t_str) -> float:
+    """'1:15.5' → 75.5 seconds. Returns nan for invalid/null."""
+    if pd.isna(t_str):
+        return np.nan
+    s = str(t_str).strip()
+    if ":" in s:
+        parts = s.split(":")
+        try:
+            return float(parts[0]) * 60 + float(parts[1])
+        except Exception:
+            return np.nan
+    try:
+        return float(s)
+    except Exception:
+        return np.nan
+
+
+def _parse_final_corner(pr) -> float:
+    """'7-3-2' → 2.0 (last corner position). Returns nan for invalid/null."""
+    if pd.isna(pr):
+        return np.nan
+    parts = str(pr).split("-")
+    try:
+        return float(parts[-1])
+    except Exception:
+        return np.nan
 
 
 def _bayes(num, den, prior, k):
@@ -128,6 +156,36 @@ def precompute_stats(df_history: pd.DataFrame, params: Optional[dict] = None) ->
             trainer_top3=("is_top3", "sum"),
         )
 
+    # ── 速度指数（finish_time + distance → relative speed） ──
+    race_grp = [c for c in ["race_date", "venue", "race_no"] if c in dh.columns]
+    horse_speed_total_d: dict[str, dict] = {}
+    horse_corner_rate_d: dict = {}
+    horse_last3f_d: dict = {}
+    if "finish_time" in dh.columns and "distance" in dh.columns and race_grp:
+        dh["_finish_sec"] = dh["finish_time"].apply(_parse_time)
+        valid = dh["_finish_sec"] > 0
+        dh["_speed_raw"] = np.where(valid, dh["distance"] / dh["_finish_sec"], np.nan)
+        dh["_race_med_speed"] = dh.groupby(race_grp)["_speed_raw"].transform("median")
+        dh["_rel_speed"] = dh["_speed_raw"] / dh["_race_med_speed"]
+
+        sp = dh.dropna(subset=["_rel_speed"]).groupby("horse_name")["_rel_speed"]
+        sp_mean = sp.mean().rename("avg_speed_idx")
+        sp_best = sp.apply(lambda x: x.nlargest(3).mean()).rename("best_speed_idx")
+        hs_total = pd.concat([sp_mean, sp_best], axis=1)
+        horse_speed_total_d = {col: hs_total[col].to_dict() for col in hs_total.columns}
+
+    # ── 脚質（passage_rate → normalized final corner position） ──
+    if "passage_rate" in dh.columns and "field_size" in dh.columns:
+        dh["_final_corner"] = dh["passage_rate"].apply(_parse_final_corner)
+        dh["_corner_rate"] = dh["_final_corner"] / dh["field_size"].replace(0, np.nan)
+        horse_corner_rate_d = dh.dropna(subset=["_corner_rate"]).groupby("horse_name")["_corner_rate"].mean().to_dict()
+
+    # ── 上がり3F（race内相対値） ──
+    if "last_3f" in dh.columns and race_grp:
+        dh["_race_mean_3f"] = dh.groupby(race_grp)["last_3f"].transform("mean")
+        dh["_rel_last3f"] = dh["last_3f"] / dh["_race_mean_3f"]
+        horse_last3f_d = dh.dropna(subset=["_rel_last3f"]).groupby("horse_name")["_rel_last3f"].mean().to_dict()
+
     # ── dict 形式に変換（map() 高速化のため） ──
     def to_col_dicts(df_agg: pd.DataFrame) -> dict[str, dict]:
         return {col: df_agg[col].to_dict() for col in df_agg.columns}
@@ -164,6 +222,9 @@ def precompute_stats(df_history: pd.DataFrame, params: Optional[dict] = None) ->
         "last_race_date": last_date_d,
         "jockey_venue": jk_d,
         "trainer_venue": tr_d,
+        "horse_speed_total": horse_speed_total_d,
+        "horse_corner_rate": horse_corner_rate_d,
+        "horse_last3f": horse_last3f_d,
     }
 
 
@@ -305,8 +366,18 @@ def build_features_precomputed(
     horse_weight = col_arr("horse_weight", 480)
     umaban = col_arr("horse_no", 0)
     waku = col_arr("waku", 0)
-    win_odds = col_arr("win_odds", 30.0)
     data_reliability = n_total / (n_total + 5)
+
+    # ── v4: 速度指数・脚質・上がり3F ──
+    hs_t = stats.get("horse_speed_total", {})
+    avg_speed_idx = np.array([hs_t.get("avg_speed_idx", {}).get(nm, 1.0) for nm in names], dtype=float)
+    best_speed_idx = np.array([hs_t.get("best_speed_idx", {}).get(nm, 1.0) for nm in names], dtype=float)
+
+    corner_d = stats.get("horse_corner_rate", {})
+    avg_corner_rate = np.array([corner_d.get(nm, 0.5) for nm in names], dtype=float)
+
+    last3f_d = stats.get("horse_last3f", {})
+    avg_rel_last3f = np.array([last3f_d.get(nm, 1.0) for nm in names], dtype=float)
 
     out = pd.DataFrame({
         "n_total": n_total,
@@ -337,8 +408,11 @@ def build_features_precomputed(
         "waku": waku,
         "field_size": float(field_size),
         "distance_f": float(distance) if distance else 0.0,
-        "win_odds": win_odds,
         "data_reliability": data_reliability,
+        "avg_speed_idx": avg_speed_idx,
+        "best_speed_idx": best_speed_idx,
+        "avg_corner_rate": avg_corner_rate,
+        "avg_rel_last3f": avg_rel_last3f,
     })
     return out[FEATURE_COLS]
 
@@ -375,7 +449,6 @@ def _empty_features(df_race, base_rate, field_size, distance):
     df["trainer_top3_rate"] = 0.3
     df["days_since_last"] = 60.0
     df["distance_f"] = float(distance) if distance else 0.0
-    df["win_odds"] = 30.0
     df["field_size"] = float(field_size)
     if "age" in df_race.columns:
         df["age"] = df_race["age"].fillna(4).values

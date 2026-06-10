@@ -145,29 +145,56 @@ def run_backtest(
             "year_results": [m],
         }
 
-    # LeaveOneYearOut モード
-    df["year"] = df["race_date"].dt.year
-    years = sorted(df["year"].unique())
-    if len(years) < 2:
-        return {"error": "LeaveOneYearOut には最低2年分のデータが必要です"}
+    # 月次ウォークフォワードCV
+    # 各テスト月は「その月より前の全データ」で学習 → 年内の前月データも活用可能
+    df["_ym"] = df["race_date"].dt.to_period("M")
+    periods = sorted(df["_ym"].unique())
+    if len(periods) < 7:
+        return {"error": "ウォークフォワードCVには最低7ヶ月分のデータが必要です"}
 
+    MIN_TRAIN_PERIODS = 6  # 最低6ヶ月の学習データを確保してからテスト開始
     all_metrics = []
-    for test_year in years[1:]:
-        df_train = df[df["year"] < test_year].copy()
-        df_test  = df[df["year"] == test_year].copy()
+
+    for test_period in periods[MIN_TRAIN_PERIODS:]:
+        cutoff = test_period.to_timestamp(how="S")
+        df_train = df[df["race_date"] < cutoff].copy()
+        df_test  = df[df["_ym"] == test_period].copy()
+        label = str(test_period)
         if verbose:
-            print(f"  [{test_year}] 学習データ {len(df_train)}行 / テストデータ {len(df_test)}行")
-        m = _eval_split(df_train, df_test, params, weights, verbose, str(test_year))
+            print(f"  [{label}] 学習 {len(df_train)}行 / テスト {len(df_test)}行")
+        m = _eval_split(df_train, df_test, params, weights, verbose, label)
         if m is not None:
-            m["test_year"] = test_year
+            m["period"] = label
+            m["test_year"] = test_period.year
             all_metrics.append(m)
 
     if not all_metrics:
         return {"error": "評価できるデータがありません"}
 
+    # 年別集計
+    year_results = []
+    for yr in sorted(set(m["test_year"] for m in all_metrics)):
+        yr_ms = [m for m in all_metrics if m["test_year"] == yr]
+        year_results.append({
+            "test_year": yr,
+            "n_races": sum(m["n_races"] for m in yr_ms),
+            "top5_coverage": float(np.mean([m["top5_coverage"] for m in yr_ms])),
+            "top3_hit": float(np.mean([m["top3_hit"] for m in yr_ms])),
+            "top1_acc": float(np.mean([m["top1_acc"] for m in yr_ms])),
+        })
+
+    if verbose:
+        print("\n  年別集計:")
+        for yr in year_results:
+            print(
+                f"    {yr['test_year']}: top5_coverage={yr['top5_coverage']:.1%}  "
+                f"top3_hit={yr['top3_hit']:.1%}  top1_acc={yr['top1_acc']:.1%}  ({yr['n_races']}R)"
+            )
+
     return {
         "top5_coverage": float(np.mean([m["top5_coverage"] for m in all_metrics])),
         "top3_hit": float(np.mean([m["top3_hit"] for m in all_metrics])),
         "top1_acc": float(np.mean([m["top1_acc"] for m in all_metrics])),
-        "year_results": all_metrics,
+        "year_results": year_results,
+        "month_results": all_metrics,
     }

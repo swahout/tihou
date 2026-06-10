@@ -12,7 +12,7 @@ import csv
 from datetime import datetime
 from pathlib import Path
 
-from scrapers.keibago import KeibaGoSession, VENUE_MAP, get_race_list, get_race_entries
+from scrapers.keibago import KeibaGoSession, VENUE_MAP, get_race_list, get_deba_entries
 
 VENUE = "大井"
 BABA_CODE = VENUE_MAP[VENUE]
@@ -45,7 +45,7 @@ def main():
     rows = []
     for race in races:
         rno = race["race_no"]
-        entries = get_race_entries(session, date_str, BABA_CODE, rno)
+        entries = get_deba_entries(session, date_str, BABA_CODE, rno)
         if not entries:
             continue
         field_size = len(entries)

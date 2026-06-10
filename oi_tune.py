@@ -29,9 +29,12 @@ SAVED_DIR.mkdir(parents=True, exist_ok=True)
 
 PARAMS_PATH = SAVED_DIR / "oi_best_params.json"
 DB_PATH = SAVED_DIR / "oi_optuna.db"
-STUDY_NAME = "oi_top3_top5_coverage_v2"  # v2: 直近年重視の加重目標関数
+STUDY_NAME = "oi_top3_top5_coverage_v4"  # v4: 月次walk-forward CV + 船橋データ追加
 METRIC = "top5_coverage"
 DATA_RELIABILITY_K = 10  # umaの知見: K=5より保守的なK=10が過小評価を防ぐ
+
+
+OTHERS_DIR = Path("data/historical_others")
 
 
 def load_history() -> pd.DataFrame:
@@ -48,12 +51,25 @@ def load_history() -> pd.DataFrame:
             dfs.append(df)
         except Exception as e:
             print(f"  警告: {csv} 読み込み失敗 ({e})")
+
+    # 他馬場データ（存在すれば追加）
+    other_csvs = sorted(OTHERS_DIR.glob("*.csv")) if OTHERS_DIR.exists() else []
+    for csv in other_csvs:
+        try:
+            df = pd.read_csv(csv, encoding="utf-8-sig")
+            dfs.append(df)
+        except Exception as e:
+            print(f"  警告: {csv} 読み込み失敗 ({e})")
+    if other_csvs:
+        print(f"  他馬場データ: {len(other_csvs)}ファイル読み込み")
+
     df_all = pd.concat(dfs, ignore_index=True)
     df_all["race_date"] = pd.to_datetime(df_all["race_date"])
     df_all["finish_position"] = pd.to_numeric(df_all["finish_position"], errors="coerce")
     df_all = df_all[df_all["finish_position"].notna()].copy()
     df_all["finish_position"] = df_all["finish_position"].astype(int)
-    print(f"履歴データ: {len(df_all)}行 ({df_all['race_date'].dt.year.min()}〜{df_all['race_date'].dt.year.max()})")
+    venues = df_all["venue"].unique().tolist()
+    print(f"履歴データ: {len(df_all)}行 ({df_all['race_date'].dt.year.min()}〜{df_all['race_date'].dt.year.max()}) 馬場: {venues}")
     return df_all
 
 
@@ -108,11 +124,12 @@ def do_predict(df_all: pd.DataFrame, date_str: str, params: dict | None) -> None
     df_shutuba["race_date"] = pd.to_datetime(df_shutuba["race_date"])
     print(f"\n出走表: {shutuba_path} ({len(df_shutuba)}頭)")
 
-    # 訓練データ（予測対象日の前年以前）
-    pred_year = dt.year
-    df_train = df_all[df_all["race_date"].dt.year < pred_year].copy()
+    # 訓練データ（予測対象日より前の全データ）
+    # バックテストと違い実運用では予測日前日までの全データを使用可能
+    pred_date = pd.Timestamp(dt)
+    df_train = df_all[df_all["race_date"] < pred_date].copy()
     if df_train.empty:
-        print(f"警告: {pred_year}年より前の訓練データがありません。全データで学習します。")
+        print(f"警告: {date_str}より前の訓練データがありません。全データで学習します。")
         df_train = df_all.copy()
 
     # 特徴量構築・モデル学習
