@@ -28,7 +28,7 @@ SAVED_DIR.mkdir(parents=True, exist_ok=True)
 
 PARAMS_PATH = SAVED_DIR / "oi_6mo_best_params.json"
 DB_PATH = SAVED_DIR / "oi_6mo_optuna.db"
-STUDY_NAME = "oi_6mo_top5_coverage_v1"
+STUDY_NAME = "oi_6mo_top5_coverage_v2"  # v2: avg_speed_idx/best_speed_idx/avg_corner_rate/avg_rel_last3f追加
 DATA_RELIABILITY_K = 10
 TRAIN_MONTHS = 6
 

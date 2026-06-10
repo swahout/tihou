@@ -16,6 +16,8 @@ FEATURE_COLS = [
     "sex_enc", "age", "weight_carried", "weight_change", "horse_weight",
     "umaban", "waku", "field_size", "distance_f",
     "data_reliability",
+    # v4: 速度指数・脚質・上がり3F
+    "avg_speed_idx", "best_speed_idx", "avg_corner_rate", "avg_rel_last3f",
 ]
 
 SEX_MAP = {"牡": 0, "牝": 1, "騸": 2, "セ": 2}
