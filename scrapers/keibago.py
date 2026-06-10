@@ -249,16 +249,25 @@ def get_deba_entries(session: KeibaGoSession, date_str: str,
         trainer_cells = [c.get_text(strip=True) for c in rows[i + 8].find_all(["td", "th"])]
 
         try:
-            waku = int(main_cells[0])
-            horse_no = int(main_cells[1])
-            horse_name = main_cells[2]
+            # 同一枠2頭目は枠番セルがrowspan=2で省略されるため37セルになる
+            if len(main_cells) >= 38:
+                waku = int(main_cells[0])
+                horse_no = int(main_cells[1])
+                horse_name = main_cells[2]
+                jockey_raw = main_cells[3]
+                win_odds_raw = main_cells[4] if len(main_cells) > 4 else ""
+            else:
+                # 枠番なし行: [馬番, 馬名, 騎手, オッズ, ...]
+                waku = None
+                horse_no = int(main_cells[0])
+                horse_name = main_cells[1]
+                jockey_raw = main_cells[2]
+                win_odds_raw = main_cells[3] if len(main_cells) > 3 else ""
 
             # 騎手: '岡村健（船橋）' → '岡村健'
-            jockey_raw = main_cells[3]
             jockey = jockey_raw.split("（")[0].strip() if "（" in jockey_raw else jockey_raw
 
             # オッズ（レース前は空のことが多い）
-            win_odds_raw = main_cells[4] if len(main_cells) > 4 else ""
             try:
                 win_odds = float(win_odds_raw)
             except (ValueError, TypeError):
