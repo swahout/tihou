@@ -40,7 +40,8 @@ FIELDNAMES = [
 DEFAULT_VENUES = ["船橋", "川崎", "浦和"]
 
 
-def collect_year_venue(session: KeibaGoSession, year: int, venue: str) -> int:
+def collect_year_venue(session: KeibaGoSession, year: int, venue: str,
+                       date_from: str = None, date_to: str = None) -> int:
     baba_code = VENUE_MAP[venue]
     venue_en = VENUE_EN.get(venue, venue)
     out_path = OUT_DIR / f"{venue_en}_{year}.csv"
@@ -59,6 +60,10 @@ def collect_year_venue(session: KeibaGoSession, year: int, venue: str) -> int:
     race_dates = get_race_dates_for_venue(session, year, baba_code)
     today = date.today().strftime("%Y/%m/%d")
     race_dates = [d for d in race_dates if d < today]
+    if date_from:
+        race_dates = [d for d in race_dates if d >= date_from]
+    if date_to:
+        race_dates = [d for d in race_dates if d <= date_to]
     to_collect = [d for d in race_dates if d not in existing_dates]
     print(f"  [{venue}] 開催日: {len(race_dates)}日 → 未収集: {len(to_collect)}日", flush=True)
 
@@ -136,12 +141,28 @@ def collect_year_venue(session: KeibaGoSession, year: int, venue: str) -> int:
 
 def main():
     parser = argparse.ArgumentParser(description="地方競馬（大井以外）過去データ収集")
-    parser.add_argument("--years", type=int, nargs="+", required=True,
+    parser.add_argument("--years", type=int, nargs="+",
                         help="収集年 e.g. --years 2025 2026")
+    parser.add_argument("--recent-days", type=int,
+                        help="直近N日分のみ収集（--years不要）e.g. --recent-days 30")
     parser.add_argument("--venues", nargs="+", default=DEFAULT_VENUES,
                         help=f"収集馬場 デフォルト: {DEFAULT_VENUES}")
     parser.add_argument("--delay", type=float, default=1.2)
     args = parser.parse_args()
+
+    if args.recent_days:
+        from datetime import timedelta
+        end = date.today()
+        start = end - timedelta(days=args.recent_days)
+        # 対象年を自動判定
+        years = sorted(set([start.year, end.year]))
+        date_filter = (start.strftime("%Y/%m/%d"), end.strftime("%Y/%m/%d"))
+        print(f"直近{args.recent_days}日: {date_filter[0]} 〜 {date_filter[1]}")
+    elif args.years:
+        years = args.years
+        date_filter = None
+    else:
+        parser.error("--years か --recent-days のどちらかを指定してください")
 
     session = KeibaGoSession(delay=args.delay)
     total = 0
@@ -149,9 +170,11 @@ def main():
         if venue not in VENUE_MAP:
             print(f"未知の馬場: {venue}  スキップ")
             continue
-        for year in sorted(args.years):
+        for year in sorted(years):
             print(f"\n{venue} {year}年 収集開始")
-            total += collect_year_venue(session, year, venue)
+            total += collect_year_venue(session, year, venue,
+                                        date_from=date_filter[0] if date_filter else None,
+                                        date_to=date_filter[1] if date_filter else None)
 
     print(f"\n合計 {total}行 収集完了")
 
