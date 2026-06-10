@@ -67,6 +67,9 @@ def collect_year_venue(session: KeibaGoSession, year: int, venue: str) -> int:
         return 0
 
     all_rows: list[dict] = []
+    total_saved = 0
+    first_write = not out_path.exists()
+
     for i, date_str in enumerate(to_collect, 1):
         races = get_race_list(session, date_str, baba_code)
         if not races:
@@ -109,24 +112,26 @@ def collect_year_venue(session: KeibaGoSession, year: int, venue: str) -> int:
                     "result_weight_change": h.get("result_weight_change", ""),
                 })
         if day_rows:
+            # 1日ごとに即書き込み（途中停止でも消えない）
+            mode = "w" if first_write else "a"
+            with open(out_path, mode, encoding="utf-8-sig", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
+                if first_write:
+                    writer.writeheader()
+                writer.writerows(day_rows)
+            first_write = False
+            total_saved += len(day_rows)
             all_rows.extend(day_rows)
-            print(f"  [{venue}] [{i}/{len(to_collect)}] {date_str}: {len(day_rows)}行", flush=True)
+            print(f"  [{venue}] [{i}/{len(to_collect)}] {date_str}: {len(day_rows)}行 (累計{total_saved}行)", flush=True)
         else:
             print(f"  [{venue}] [{i}/{len(to_collect)}] {date_str}: データなし", flush=True)
 
-    if not all_rows:
+    if total_saved == 0:
         print(f"  [{venue}] {year}年: データなし")
         return 0
 
-    mode = "a" if out_path.exists() and existing_dates else "w"
-    with open(out_path, mode, encoding="utf-8-sig", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
-        if mode == "w":
-            writer.writeheader()
-        writer.writerows(all_rows)
-
-    print(f"  [{venue}] → 保存: {out_path} (+{len(all_rows)}行)", flush=True)
-    return len(all_rows)
+    print(f"  [{venue}] → 保存完了: {out_path} (合計{total_saved}行)", flush=True)
+    return total_saved
 
 
 def main():
