@@ -83,7 +83,9 @@ def collect_one_date(session: KeibaGoSession, date_str: str) -> list[dict]:
 
 
 def collect_year(year: int, session: KeibaGoSession) -> int:
-    """指定年の川崎競馬データを収集してCSVに追記。収集行数を返す。"""
+    """指定年の川崎競馬データを収集してCSVに追記。収集行数を返す。
+    1日ごとに即座にCSVへ追記するので、途中停止・再起動しても続きから収集できる。
+    """
     out_path = OUT_DIR / f"kawasaki_{year}.csv"
 
     existing_dates: set[str] = set()
@@ -107,28 +109,25 @@ def collect_year(year: int, session: KeibaGoSession) -> int:
         print(f"  {year}年: 収集済み")
         return 0
 
-    all_rows: list[dict] = []
+    # ファイルが存在しない場合はヘッダーを先に書く
+    if not out_path.exists():
+        with open(out_path, "w", encoding="utf-8-sig", newline="") as f:
+            csv.DictWriter(f, fieldnames=FIELDNAMES).writeheader()
+
+    total_rows = 0
     for i, date_str in enumerate(to_collect, 1):
         rows = collect_one_date(session, date_str)
         if rows:
-            all_rows.extend(rows)
+            # 1日分を即座に追記（プロセスが死んでもここまでは保存済み）
+            with open(out_path, "a", encoding="utf-8-sig", newline="") as f:
+                csv.DictWriter(f, fieldnames=FIELDNAMES).writerows(rows)
+            total_rows += len(rows)
             print(f"  [{i}/{len(to_collect)}] {date_str}: {len(rows)}行", flush=True)
         else:
             print(f"  [{i}/{len(to_collect)}] {date_str}: 取得失敗", flush=True)
 
-    if not all_rows:
-        print(f"  {year}年: データなし")
-        return 0
-
-    mode = "a" if out_path.exists() and existing_dates else "w"
-    with open(out_path, mode, encoding="utf-8-sig", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
-        if mode == "w":
-            writer.writeheader()
-        writer.writerows(all_rows)
-
-    print(f"  → 保存: {out_path} (+{len(all_rows)}行)", flush=True)
-    return len(all_rows)
+    print(f"  → 保存: {out_path} (+{total_rows}行)", flush=True)
+    return total_rows
 
 
 def main():

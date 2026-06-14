@@ -55,18 +55,22 @@ class KeibaGoSession:
         self.session = requests.Session()
         self.session.headers.update(HEADERS)
 
-    def get_soup(self, url: str) -> Optional[BeautifulSoup]:
-        elapsed = time.time() - self._last
-        if elapsed < self.delay:
-            time.sleep(self.delay - elapsed)
-        try:
-            resp = self.session.get(url, timeout=15)
-            self._last = time.time()
-            resp.raise_for_status()
-            return BeautifulSoup(resp.content, "lxml")
-        except Exception:
-            self._last = time.time()
-            return None
+    def get_soup(self, url: str, retries: int = 3) -> Optional[BeautifulSoup]:
+        for attempt in range(retries):
+            elapsed = time.time() - self._last
+            if elapsed < self.delay:
+                time.sleep(self.delay - elapsed)
+            try:
+                resp = self.session.get(url, timeout=20)
+                self._last = time.time()
+                resp.raise_for_status()
+                return BeautifulSoup(resp.content, "lxml")
+            except Exception as e:
+                self._last = time.time()
+                if attempt < retries - 1:
+                    wait = 2 ** attempt  # 1s, 2s, 4s
+                    time.sleep(wait)
+        return None
 
 
 def get_race_list(session: KeibaGoSession, date_str: str, baba_code: int) -> list[dict]:
