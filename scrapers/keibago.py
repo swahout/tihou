@@ -240,10 +240,11 @@ def get_deba_entries(session: KeibaGoSession, date_str: str,
     START = 2   # ヘッダー2行をスキップ
 
     horses = []
+    horse_counter = 0  # 馬番の連番カウンタ（9頭以上で同一枠に複数頭入る場合の対策）
     i = START
     while i + BLOCK <= len(rows):
         main_cells = [c.get_text(strip=True) for c in rows[i].find_all(["td", "th"])]
-        if len(main_cells) < 5:
+        if len(main_cells) < 4:
             i += 1
             continue
 
@@ -254,15 +255,29 @@ def get_deba_entries(session: KeibaGoSession, date_str: str,
 
         try:
             waku = int(main_cells[0])
-            horse_no = int(main_cells[1])
-            horse_name = main_cells[2]
+            horse_counter += 1
+
+            # 9頭以上のレースで同一枠に複数頭が入る場合、先頭馬のHTMLは
+            # <td rowspan=5>枠番</td><td colspan=3>馬名</td><td>騎手</td>... の形になり
+            # 馬番セルが省略される。main_cells[1]が整数でなければこのケース。
+            if main_cells[1].lstrip("0123456789").strip() or not main_cells[1].isdigit():
+                # colspan=3 パターン: cells = [waku, horse_name, jockey, odds, ...]
+                horse_no   = horse_counter
+                horse_name = main_cells[1]
+                jockey_raw = main_cells[2]
+                win_odds_raw = main_cells[3] if len(main_cells) > 3 else ""
+            else:
+                # 通常パターン: cells = [waku, horse_no, horse_name, jockey, odds, ...]
+                horse_no   = int(main_cells[1])
+                horse_counter = horse_no  # 実際の馬番でカウンタを同期
+                horse_name = main_cells[2]
+                jockey_raw = main_cells[3]
+                win_odds_raw = main_cells[4] if len(main_cells) > 4 else ""
 
             # 騎手: '岡村健（船橋）' → '岡村健'
-            jockey_raw = main_cells[3]
             jockey = jockey_raw.split("（")[0].strip() if "（" in jockey_raw else jockey_raw
 
             # オッズ（レース前は空のことが多い）
-            win_odds_raw = main_cells[4] if len(main_cells) > 4 else ""
             try:
                 win_odds = float(win_odds_raw)
             except (ValueError, TypeError):
