@@ -1,23 +1,16 @@
 #!/usr/bin/env python3
-"""大井競馬 過去レースデータ収集
+"""川崎競馬 過去レースデータ収集
 
 Usage:
-    python collect_historical_oi.py --years 2019 2020 2021 2022 2023 2024 2025
-    python collect_historical_oi.py --date 2025/06/01
+    python collect_historical_kawasaki.py --years 2022 2023 2024 2025
+    python collect_historical_kawasaki.py --date 2025/06/01
 
-出力: data/historical_oi/oi_{year}.csv
-各行: 1頭 × 1レースの生データ（特徴量はモデル学習時に計算）
-
-高速化: MonthlyConveneInfo から開催日のみ取得（全日付スキャン不要）
+出力: data/historical_kawasaki/kawasaki_{year}.csv
 """
 import argparse
 import csv
-import os
-import pathlib
 from datetime import date
 from pathlib import Path
-
-os.chdir(pathlib.Path(__file__).parent)
 
 from scrapers.keibago import (
     KeibaGoSession, VENUE_MAP,
@@ -25,9 +18,9 @@ from scrapers.keibago import (
     get_race_data,
 )
 
-VENUE = "大井"
+VENUE = "川崎"
 BABA_CODE = VENUE_MAP[VENUE]
-OUT_DIR = Path("data/historical_oi")
+OUT_DIR = Path("data/historical_kawasaki")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 FIELDNAMES = [
@@ -90,10 +83,11 @@ def collect_one_date(session: KeibaGoSession, date_str: str) -> list[dict]:
 
 
 def collect_year(year: int, session: KeibaGoSession) -> int:
-    """指定年の大井競馬データを収集してCSVに追記。収集行数を返す。"""
-    out_path = OUT_DIR / f"oi_{year}.csv"
+    """指定年の川崎競馬データを収集してCSVに追記。収集行数を返す。
+    1日ごとに即座にCSVへ追記するので、途中停止・再起動しても続きから収集できる。
+    """
+    out_path = OUT_DIR / f"kawasaki_{year}.csv"
 
-    # 収集済み日付の読み込み
     existing_dates: set[str] = set()
     if out_path.exists():
         import pandas as pd
@@ -104,13 +98,10 @@ def collect_year(year: int, session: KeibaGoSession) -> int:
         except Exception:
             pass
 
-    # 開催日一覧を取得（非開催日スキャン不要）
     print(f"  開催日程取得中 (MonthlyConveneInfo)...", flush=True)
     race_dates = get_race_dates_for_venue(session, year, BABA_CODE)
-    # 当日以降は除外（未確定データ）
     today = date.today().strftime("%Y/%m/%d")
     race_dates = [d for d in race_dates if d < today]
-    # 収集済みをスキップ
     to_collect = [d for d in race_dates if d not in existing_dates]
     print(f"  開催日: {len(race_dates)}日 → 未収集: {len(to_collect)}日", flush=True)
 
@@ -118,36 +109,36 @@ def collect_year(year: int, session: KeibaGoSession) -> int:
         print(f"  {year}年: 収集済み")
         return 0
 
-    need_header = not out_path.exists()
-    total_rows = 0
-    with open(out_path, "a", encoding="utf-8-sig", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
-        if need_header:
-            writer.writeheader()
-        for i, date_str in enumerate(to_collect, 1):
-            rows = collect_one_date(session, date_str)
-            if rows:
-                writer.writerows(rows)
-                f.flush()
-                total_rows += len(rows)
-                print(f"  [{i}/{len(to_collect)}] {date_str}: {len(rows)}行 (累計{total_rows}行)", flush=True)
-            else:
-                print(f"  [{i}/{len(to_collect)}] {date_str}: 取得失敗", flush=True)
+    # ファイルが存在しない場合はヘッダーを先に書く
+    if not out_path.exists():
+        with open(out_path, "w", encoding="utf-8-sig", newline="") as f:
+            csv.DictWriter(f, fieldnames=FIELDNAMES).writeheader()
 
-    print(f"  → 保存完了: {out_path} (+{total_rows}行)", flush=True)
+    total_rows = 0
+    for i, date_str in enumerate(to_collect, 1):
+        rows = collect_one_date(session, date_str)
+        if rows:
+            # 1日分を即座に追記（プロセスが死んでもここまでは保存済み）
+            with open(out_path, "a", encoding="utf-8-sig", newline="") as f:
+                csv.DictWriter(f, fieldnames=FIELDNAMES).writerows(rows)
+            total_rows += len(rows)
+            print(f"  [{i}/{len(to_collect)}] {date_str}: {len(rows)}行", flush=True)
+        else:
+            print(f"  [{i}/{len(to_collect)}] {date_str}: 取得失敗", flush=True)
+
+    print(f"  → 保存: {out_path} (+{total_rows}行)", flush=True)
     return total_rows
 
 
 def main():
-    parser = argparse.ArgumentParser(description="大井競馬 過去データ収集")
+    parser = argparse.ArgumentParser(description="川崎競馬 過去データ収集")
     parser.add_argument(
         "--years", type=int, nargs="+",
-        help="収集年（複数指定可） e.g. --years 2019 2020 2021 2022 2023 2024 2025"
+        help="収集年（複数指定可） e.g. --years 2022 2023 2024 2025"
     )
     parser.add_argument(
         "--date", help="特定日のみ収集 e.g. --date 2025/06/01"
     )
-    # 歴史データ収集は少し速め（礼儀上 0.8s 以上）
     parser.add_argument("--delay", type=float, default=0.8, help="リクエスト間隔(秒) デフォルト0.8")
     args = parser.parse_args()
 
@@ -158,7 +149,7 @@ def main():
         rows = collect_one_date(session, args.date)
         if rows:
             year = int(args.date[:4])
-            out_path = OUT_DIR / f"oi_{year}.csv"
+            out_path = OUT_DIR / f"kawasaki_{year}.csv"
             mode = "a" if out_path.exists() else "w"
             with open(out_path, mode, encoding="utf-8-sig", newline="") as f:
                 writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
@@ -170,7 +161,7 @@ def main():
             print("  開催なしまたは取得失敗")
         return
 
-    years = args.years or list(range(date.today().year - 2, date.today().year))
+    years = args.years or list(range(date.today().year - 3, date.today().year))
     for year in sorted(years):
         print(f"\n{VENUE} {year}年 収集開始")
         collect_year(year, session)
