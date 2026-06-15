@@ -8,6 +8,9 @@ Usage:
 
 出力: data/historical_{venue_key}/{venue_key}_{year}.csv
 """
+import os, pathlib
+# どこから実行しても tihou/ が作業ディレクトリになるよう固定
+os.chdir(pathlib.Path(__file__).parent)
 import argparse
 import csv
 from datetime import date
@@ -119,27 +122,25 @@ def collect_venue_year(venue: str, year: int, session: KeibaGoSession) -> int:
         print(f"  {year}年: 収集済み")
         return 0
 
-    all_rows: list[dict] = []
-    for i, date_str in enumerate(to_collect, 1):
-        rows = collect_one_date(session, date_str, venue, baba_code)
-        if rows:
-            all_rows.extend(rows)
-            print(f"  [{i}/{len(to_collect)}] {date_str}: {len(rows)}行", flush=True)
-        else:
-            print(f"  [{i}/{len(to_collect)}] {date_str}: 取得失敗", flush=True)
-
-    if not all_rows:
-        return 0
-
-    mode = "a" if out_path.exists() and existing_dates else "w"
-    with open(out_path, mode, encoding="utf-8-sig", newline="") as f:
+    # 日ごとに即追記（途中停止してもデータが消えない）
+    need_header = not out_path.exists()
+    total_rows = 0
+    with open(out_path, "a", encoding="utf-8-sig", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
-        if mode == "w":
+        if need_header:
             writer.writeheader()
-        writer.writerows(all_rows)
+        for i, date_str in enumerate(to_collect, 1):
+            rows = collect_one_date(session, date_str, venue, baba_code)
+            if rows:
+                writer.writerows(rows)
+                f.flush()
+                total_rows += len(rows)
+                print(f"  [{i}/{len(to_collect)}] {date_str}: {len(rows)}行 (累計{total_rows}行)", flush=True)
+            else:
+                print(f"  [{i}/{len(to_collect)}] {date_str}: 取得失敗", flush=True)
 
-    print(f"  → 保存: {out_path} (+{len(all_rows)}行)", flush=True)
-    return len(all_rows)
+    print(f"  → 保存完了: {out_path} (+{total_rows}行)", flush=True)
+    return total_rows
 
 
 def main():
