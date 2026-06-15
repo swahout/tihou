@@ -6,11 +6,12 @@ Usage:
     python kawasaki_predict.py --backtest
     python kawasaki_predict.py --tune --trials 100
 
-特徴量 (25種):
+特徴量 (31種):
     - 当場成績率・通算成績率（Bayesian平滑化）
-    - 直近フォーム / 当場直近フォーム
-    - 騎手実績（当場）
-    - テン乗りフラグ
+    - 当場当距離3着内率 / 馬場状態別3着内率 [v2追加]
+    - 直近フォーム / 当場直近フォーム / フォームトレンド [v2追加]
+    - 騎手実績・調教師実績（当場）[v2追加: 調教師]
+    - テン乗りフラグ / 昇降級フラグ [v2追加]
     - 速度指数（相対タイム）/ 上がり3F指数 / 脚質（通過順位）
     - レースクラス
     - 物理情報（年齢・斤量・馬番・距離）
@@ -47,26 +48,38 @@ FEATURE_COLS = [
     "top3_rate_venue",
     "win_rate_venue",
     "n_venue",
+    # 当場×当距離成績 [v2]
+    "top3_rate_venue_dist",
+    "n_venue_dist",
     # 通算成績
     "top3_rate_total",
     "win_rate_total",
     "n_total",
+    # 馬場状態別成績 [v2]
+    "top3_rate_cond",
+    "n_cond",
     # 直近フォーム
     "recent_avg_pos",
     "recent_top3",
     "recent_venue_avg_pos",
-    # 速度指数・上がり・脚質（データがある馬は欠損なし、ない馬はデフォルト値）
-    "avg_speed_idx",       # 相対速度指数（median_time/horse_time, >1=速い）
-    "best_speed_idx",      # 上位3走の平均速度指数
-    "avg_last3f_idx",      # 上がり3F相対指数（median_last3f/horse_last3f, >1=速い）
-    "avg_corner_ratio",    # 最終コーナー通過順÷頭数（0=逃げ, 1=追い込み）
+    # フォームトレンド [v2]: 正=改善（着順下落）、負=悪化
+    "form_trend",
+    # 速度指数・上がり・脚質
+    "avg_speed_idx",
+    "best_speed_idx",
+    "avg_last3f_idx",
+    "avg_corner_ratio",
     # 騎手
     "jockey_top3_rate",
     "jockey_win_rate",
+    # 調教師 [v2]
+    "trainer_top3_rate",
     # テン乗り
     "is_ten_nori",
+    # 昇降級フラグ [v2]: 正=昇級(harder)、負=降級(easier)、0=同クラス
+    "class_change",
     # レース属性
-    "race_class_enc",      # A1=7, A2=6, B1=5, B2=4, C1/B3=3, C2=2, C3=1, 未格付=0
+    "race_class_enc",
     "distance",
     "field_size",
     # 馬属性
@@ -79,31 +92,38 @@ FEATURE_COLS = [
 ]
 
 FEATURE_LABEL = {
-    "top3_rate_venue":    "川崎3着内率",
-    "win_rate_venue":     "川崎勝率",
-    "n_venue":            "川崎出走数",
-    "top3_rate_total":    "通算3着内率",
-    "win_rate_total":     "通算勝率",
-    "n_total":            "通算出走数",
-    "recent_avg_pos":     "直近着順",
-    "recent_top3":        "直近3着内率",
+    "top3_rate_venue":      "川崎3着内率",
+    "win_rate_venue":       "川崎勝率",
+    "n_venue":              "川崎出走数",
+    "top3_rate_venue_dist": "川崎同距3着内率",
+    "n_venue_dist":         "川崎同距出走数",
+    "top3_rate_total":      "通算3着内率",
+    "win_rate_total":       "通算勝率",
+    "n_total":              "通算出走数",
+    "top3_rate_cond":       "馬場状態3着内率",
+    "n_cond":               "同馬場出走数",
+    "recent_avg_pos":       "直近着順",
+    "recent_top3":          "直近3着内率",
     "recent_venue_avg_pos": "川崎直近着順",
-    "avg_speed_idx":      "速度指数",
-    "best_speed_idx":     "最高速度",
-    "avg_last3f_idx":     "上がり3F",
-    "avg_corner_ratio":   "脚質(通過順)",
-    "jockey_top3_rate":   "騎手実績",
-    "jockey_win_rate":    "騎手勝率",
-    "is_ten_nori":        "テン乗り",
-    "race_class_enc":     "レースクラス",
-    "distance":           "距離",
-    "field_size":         "頭数",
-    "age":                "年齢",
-    "weight_carried":     "斤量",
-    "sex_enc":            "性別",
-    "umaban":             "馬番",
-    "days_since_last":    "休養日数",
-    "data_reliability":   "データ量",
+    "form_trend":           "フォーム改善",
+    "avg_speed_idx":        "速度指数",
+    "best_speed_idx":       "最高速度",
+    "avg_last3f_idx":       "上がり3F",
+    "avg_corner_ratio":     "脚質(通過順)",
+    "jockey_top3_rate":     "騎手実績",
+    "jockey_win_rate":      "騎手勝率",
+    "trainer_top3_rate":    "調教師実績",
+    "is_ten_nori":          "テン乗り",
+    "class_change":         "昇降級",
+    "race_class_enc":       "レースクラス",
+    "distance":             "距離",
+    "field_size":           "頭数",
+    "age":                  "年齢",
+    "weight_carried":       "斤量",
+    "sex_enc":              "性別",
+    "umaban":               "馬番",
+    "days_since_last":      "休養日数",
+    "data_reliability":     "データ量",
 }
 
 SEX_MAP = {"牡": 0, "牝": 1, "セン": 2, "": 0}
@@ -278,13 +298,67 @@ def compute_stats(df_hist: pd.DataFrame) -> dict:
     if "speed_idx" in df.columns:
         sp_valid = df[df["speed_idx"].notna()].copy()
         avg_speed_idx = sp_valid.groupby("horse_name")["speed_idx"].mean()
-        # top3平均: rank降順で上位3件を取る
         sp_valid["_sp_rank"] = sp_valid.groupby("horse_name")["speed_idx"].rank(
             method="first", ascending=False)
         best_speed_idx = (sp_valid[sp_valid["_sp_rank"] <= 3]
                           .groupby("horse_name")["speed_idx"].mean())
         avg_last3f_idx = df[df["last3f_idx"].notna()].groupby("horse_name")["last3f_idx"].mean()
         avg_corner     = df[df["corner_ratio"].notna()].groupby("horse_name")["corner_ratio"].mean()
+
+    # ── 当場×当距離成績 [v2] ──
+    vd_n    = df_venue.groupby(["horse_name", "distance"]).size()
+    vd_top3 = df_venue.groupby(["horse_name", "distance"])["_is_top3"].sum()
+    # per-horse dict: { distance: {"n": n, "top3_rate": r} }
+    vd_dict: dict[str, dict] = {}
+    for (hname, dist), cnt in vd_n.items():
+        if hname not in vd_dict:
+            vd_dict[hname] = {}
+        top3_cnt = int(vd_top3.get((hname, dist), 0))
+        vd_dict[hname][dist] = {
+            "n": int(cnt),
+            "top3_rate": _bayes(top3_cnt, int(cnt), j_top3_prior, K_HORSE),
+        }
+
+    # ── 馬場状態別成績 [v2] ──
+    df_cond = df[df["track_cond"].notna() & (df["track_cond"] != "")].copy()
+    cond_n    = df_cond.groupby(["horse_name", "track_cond"]).size()
+    cond_top3 = df_cond.groupby(["horse_name", "track_cond"])["_is_top3"].sum()
+    cond_dict: dict[str, dict] = {}
+    for (hname, cond), cnt in cond_n.items():
+        if hname not in cond_dict:
+            cond_dict[hname] = {}
+        top3_cnt = int(cond_top3.get((hname, cond), 0))
+        cond_dict[hname][cond] = {
+            "n": int(cnt),
+            "top3_rate": _bayes(top3_cnt, int(cnt), global_top3_prior, K_HORSE),
+        }
+
+    # ── 調教師実績（当場）[v2] ──
+    t_n     = df_venue.groupby("trainer").size()
+    t_top3  = df_venue.groupby("trainer")["_is_top3"].sum()
+    t_win   = df_venue.groupby("trainer")["_is_win"].sum()
+
+    trainer_stats: dict[str, dict] = {}
+    for tr in t_n.index:
+        tn = int(t_n.get(tr, 0))
+        trainer_stats[tr] = {
+            "trainer_top3_rate": _bayes(t_top3.get(tr, 0), tn, j_top3_prior, K_JOCKEY),
+        }
+
+    # ── フォームトレンド [v2] ──
+    # 直近3走の着順変化: (3走前着順 - 最新着順) → 正=改善
+    df_s3 = df.sort_values(["horse_name", "race_date"])
+    df_s3["_rev_idx"] = df_s3.groupby("horse_name").cumcount(ascending=False)
+    pos_latest = (df_s3[df_s3["_rev_idx"] == 0]
+                  .set_index("horse_name")["finish_position"])
+    pos_3rd    = (df_s3[df_s3["_rev_idx"] == 2]
+                  .set_index("horse_name")["finish_position"])
+    form_trend_s = (pos_3rd - pos_latest)  # 正=改善、負=悪化
+
+    # ── 前走クラス（昇降級判定用）[v2] ──
+    df_s3["_class_enc"] = df_s3["race_name"].apply(_extract_class)
+    last_class_s = (df_s3[df_s3["_rev_idx"] == 0]
+                    .set_index("horse_name")["_class_enc"])
 
     all_horses = set(total_n.index) | set(venue_n.index)
     horse_stats = {}
@@ -306,6 +380,11 @@ def compute_stats(df_hist: pd.DataFrame) -> dict:
             "best_speed_idx":       best_speed_idx.get(name, np.nan),
             "avg_last3f_idx":       avg_last3f_idx.get(name, np.nan),
             "avg_corner_ratio":     avg_corner.get(name, np.nan),
+            # v2
+            "vd_stats":             vd_dict.get(name, {}),
+            "cond_stats":           cond_dict.get(name, {}),
+            "form_trend":           form_trend_s.get(name, np.nan),
+            "last_class":           last_class_s.get(name, np.nan),
         }
 
     jockey_stats = {}
@@ -319,6 +398,7 @@ def compute_stats(df_hist: pd.DataFrame) -> dict:
     return {
         "horse":              horse_stats,
         "jockey":             jockey_stats,
+        "trainer":            trainer_stats,
         "horse_jockey_pairs": horse_jockey_pairs,
         "priors": {
             "top3":   global_top3_prior,
@@ -332,47 +412,82 @@ def compute_stats(df_hist: pd.DataFrame) -> dict:
 # ── 特徴量構築 ─────────────────────────────────────────────
 
 def build_features(df_race: pd.DataFrame, stats: dict, pred_date: pd.Timestamp) -> pd.DataFrame:
-    priors = stats["priors"]
-    pairs  = stats["horse_jockey_pairs"]
+    priors          = stats["priors"]
+    pairs           = stats["horse_jockey_pairs"]
+    trainer_stats   = stats.get("trainer", {})
     rows = []
     for _, h in df_race.iterrows():
-        name   = h["horse_name"]
-        jockey = h.get("jockey", "")
+        name    = h["horse_name"]
+        jockey  = h.get("jockey", "")
+        trainer = h.get("trainer", "")
         hs = stats["horse"].get(name, {})
         js = stats["jockey"].get(jockey, {})
+        ts = trainer_stats.get(trainer, {})
 
         last_dt = hs.get("last_race_date", pd.NaT)
-        days = (pred_date - last_dt).days if pd.notna(last_dt) else 999
+        days    = (pred_date - last_dt).days if pd.notna(last_dt) else 999
         n_total = hs.get("n_total", 0)
-        fs  = h.get("field_size", 8) or 8
+        fs      = h.get("field_size", 8) or 8
+        distance    = h.get("distance", 1400)
+        track_cond  = str(h.get("track_cond", "") or "")
+        race_cls    = _extract_class(h.get("race_name", ""))
 
-        # 速度指数のデフォルト値: 1.0（レース平均相当）
         def spd(key, default=1.0):
             v = hs.get(key, np.nan)
             return v if pd.notna(v) else default
 
         is_ten_nori = 0 if (name, jockey) in pairs else 1
 
+        # 当場×当距離 [v2]
+        vd     = hs.get("vd_stats", {}).get(distance, {})
+        n_vd   = vd.get("n", 0)
+        top3_vd = vd.get("top3_rate", _bayes(0, 0, priors["j_top3"], K_HORSE))
+
+        # 馬場状態別 [v2]
+        cd     = hs.get("cond_stats", {}).get(track_cond, {})
+        n_cd   = cd.get("n", 0)
+        top3_cd = cd.get("top3_rate", _bayes(0, 0, priors["top3"], K_HORSE))
+
+        # フォームトレンド [v2]
+        ft_raw = hs.get("form_trend", np.nan)
+        form_trend = float(ft_raw) if pd.notna(ft_raw) else 0.0
+
+        # 昇降級 [v2]: 正=昇級(harder)、負=降級(easier)
+        last_cls_raw = hs.get("last_class", np.nan)
+        last_cls     = int(last_cls_raw) if pd.notna(last_cls_raw) else race_cls
+        class_change = race_cls - last_cls
+
+        # 調教師 [v2]
+        trainer_top3 = ts.get("trainer_top3_rate",
+                               _bayes(0, 0, priors["j_top3"], K_JOCKEY))
+
         row = {
             "horse_name":           name,
             "top3_rate_venue":      hs.get("top3_rate_venue",      _bayes(0, 0, priors["j_top3"], K_HORSE)),
             "win_rate_venue":       hs.get("win_rate_venue",        _bayes(0, 0, priors["j_win"],  K_HORSE)),
             "n_venue":              hs.get("n_venue", 0),
+            "top3_rate_venue_dist": top3_vd,
+            "n_venue_dist":         n_vd,
             "top3_rate_total":      hs.get("top3_rate_total",       _bayes(0, 0, priors["top3"],   K_HORSE)),
             "win_rate_total":       hs.get("win_rate_total",        _bayes(0, 0, priors["win"],    K_HORSE)),
             "n_total":              n_total,
+            "top3_rate_cond":       top3_cd,
+            "n_cond":               n_cd,
             "recent_avg_pos":       hs.get("recent_avg_pos",        fs * 0.6),
             "recent_top3":          hs.get("recent_top3",           priors["top3"]),
             "recent_venue_avg_pos": hs.get("recent_venue_avg_pos",  fs * 0.6),
+            "form_trend":           form_trend,
             "avg_speed_idx":        spd("avg_speed_idx"),
             "best_speed_idx":       spd("best_speed_idx"),
             "avg_last3f_idx":       spd("avg_last3f_idx"),
             "avg_corner_ratio":     spd("avg_corner_ratio", default=0.5),
             "jockey_top3_rate":     js.get("jockey_top3_rate", _bayes(0, 0, priors["j_top3"], K_JOCKEY)),
             "jockey_win_rate":      js.get("jockey_win_rate",  _bayes(0, 0, priors["j_win"],  K_JOCKEY)),
+            "trainer_top3_rate":    trainer_top3,
             "is_ten_nori":          is_ten_nori,
-            "race_class_enc":       _extract_class(h.get("race_name", "")),
-            "distance":             h.get("distance", 1400),
+            "class_change":         class_change,
+            "race_class_enc":       race_cls,
+            "distance":             distance,
             "field_size":           fs,
             "age":                  h.get("age", 0) or 0,
             "weight_carried":       h.get("weight_carried", 55.0) or 55.0,
@@ -747,7 +862,7 @@ def do_tune(df_hist: pd.DataFrame, n_trials: int = 100) -> None:
     storage = f"sqlite:///{OPTUNA_DB}"
     study = optuna.create_study(
         direction="maximize",
-        study_name="kawasaki_2026_8R_top5_v1",
+        study_name="kawasaki_2026_8R_top5_v2",
         storage=storage,
         load_if_exists=True,
     )
