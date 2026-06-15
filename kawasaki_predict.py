@@ -4,6 +4,7 @@
 Usage:
     python kawasaki_predict.py --date 2026/06/15
     python kawasaki_predict.py --backtest
+    python kawasaki_predict.py --tune --trials 100
 
 特徴量 (25種):
     - 当場成績率・通算成績率（Bayesian平滑化）
@@ -31,6 +32,8 @@ import lightgbm as lgb
 KAWASAKI_DIR = Path("data/historical_kawasaki")
 OI_DIR       = Path("data/historical_oi")
 RACES_DIR    = Path("data/races")
+PARAMS_PATH  = Path("data/kawasaki_best_params.json")
+OPTUNA_DB    = Path("data/kawasaki_optuna.db")
 VENUE        = "川崎"
 
 # ── Bayesian平滑化パラメータ ──────────────────────────────
@@ -415,7 +418,41 @@ def build_train_data(df_hist: pd.DataFrame) -> tuple:
 
 # ── LightGBM学習 ──────────────────────────────────────────
 
-def train_model(X: pd.DataFrame, y: np.ndarray, groups: np.ndarray) -> lgb.Booster:
+_DEFAULT_PARAMS = {
+    "objective":         "rank_xendcg",
+    "metric":            "ndcg",
+    "ndcg_eval_at":      [3, 5],
+    "learning_rate":     0.05,
+    "num_leaves":        31,
+    "min_child_samples": 10,
+    "subsample":         0.8,
+    "colsample_bytree":  0.8,
+    "reg_alpha":         0.1,
+    "reg_lambda":        0.1,
+    "verbose":           -1,
+    "n_jobs":            -1,
+}
+_DEFAULT_ROUNDS = 300
+
+
+def _load_params() -> tuple[dict, int]:
+    """保存済みパラメータを読み込む。なければデフォルト値。"""
+    import json
+    if PARAMS_PATH.exists():
+        saved = json.loads(PARAMS_PATH.read_text())
+        num_rounds = int(saved.pop("num_boost_round", _DEFAULT_ROUNDS))
+        params = {**_DEFAULT_PARAMS, **saved}
+        return params, num_rounds
+    return dict(_DEFAULT_PARAMS), _DEFAULT_ROUNDS
+
+
+def train_model(X: pd.DataFrame, y: np.ndarray, groups: np.ndarray,
+                params: dict | None = None, num_rounds: int | None = None) -> lgb.Booster:
+    if params is None:
+        params, num_rounds = _load_params()
+    if num_rounds is None:
+        num_rounds = _DEFAULT_ROUNDS
+
     X_feat = X[FEATURE_COLS].fillna(X[FEATURE_COLS].median())
 
     sort_idx      = np.argsort(groups)
@@ -432,22 +469,9 @@ def train_model(X: pd.DataFrame, y: np.ndarray, groups: np.ndarray) -> lgb.Boost
         label[mask] = np.maximum(0, n - pos + 1)
 
     dataset = lgb.Dataset(X_sorted, label=label, group=gsizes)
-    params = {
-        "objective":         "rank_xendcg",
-        "metric":            "ndcg",
-        "ndcg_eval_at":      [3, 5],
-        "learning_rate":     0.05,
-        "num_leaves":        31,
-        "min_child_samples": 10,
-        "subsample":         0.8,
-        "colsample_bytree":  0.8,
-        "reg_alpha":         0.1,
-        "reg_lambda":        0.1,
-        "verbose":           -1,
-        "n_jobs":            -1,
-    }
-    return lgb.train(params, dataset, num_boost_round=300,
-                     callbacks=[lgb.log_evaluation(period=100)])
+    verbose = params.get("verbose", -1)
+    cbs = [lgb.log_evaluation(period=100)] if verbose >= 0 else []
+    return lgb.train(params, dataset, num_boost_round=num_rounds, callbacks=cbs)
 
 
 # ── SHAP根拠生成 ──────────────────────────────────────────
@@ -635,6 +659,101 @@ def _print_predictions(df_pred: pd.DataFrame, date_str: str) -> None:
                        tablefmt="simple"))
 
 
+# ── Optuna チューニング ────────────────────────────────────
+
+def do_tune(df_hist: pd.DataFrame, n_trials: int = 100) -> None:
+    import json
+    import optuna
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+    df_kw = df_hist[df_hist["venue"] == VENUE].copy()
+    all_years = sorted(df_kw["race_date"].dt.year.unique())
+    # 直近3年をCV対象（2023以降）
+    test_years = [y for y in all_years if y >= 2023]
+    if len(test_years) < 1:
+        print("チューニングに必要なデータ（2023年以降）がありません")
+        return
+
+    print(f"CV対象年: {test_years}")
+    print("年ごとに特徴量を事前計算中（初回のみ時間がかかります）...")
+
+    cv_splits = []
+    for test_year in test_years:
+        df_train = df_hist[df_hist["race_date"].dt.year < test_year].copy()
+        df_test  = df_kw[df_kw["race_date"].dt.year == test_year].copy()
+        if df_train.empty or df_test.empty:
+            continue
+        stats = compute_stats(df_train)
+        X_tr, y_tr, grp_tr = build_train_data(df_train)
+        if X_tr.empty:
+            continue
+
+        test_races = []
+        for _, race_df in df_test.groupby(
+            df_test["race_date"].dt.strftime("%Y%m%d") + "_" + df_test["race_no"].astype(str)
+        ):
+            if len(race_df) < 3:
+                continue
+            Xr = build_features(race_df.reset_index(drop=True), stats,
+                                 race_df["race_date"].iloc[0])
+            actual_top3 = set(race_df.index[race_df["finish_position"] <= 3])
+            race_index  = race_df.index.to_numpy()
+            race_no     = int(race_df["race_no"].iloc[0])
+            test_races.append((Xr, actual_top3, race_index, race_no))
+
+        cv_splits.append((X_tr, y_tr, grp_tr, test_races))
+        print(f"  {test_year}: 学習{len(X_tr):,}行, テスト{len(test_races)}R")
+
+    def objective(trial: optuna.Trial) -> float:
+        params = {
+            "objective":         "rank_xendcg",
+            "metric":            "ndcg",
+            "ndcg_eval_at":      [3, 5],
+            "verbose":           -1,
+            "n_jobs":            -1,
+            "learning_rate":     trial.suggest_float("learning_rate", 0.02, 0.15, log=True),
+            "num_leaves":        trial.suggest_int("num_leaves", 15, 127),
+            "min_child_samples": trial.suggest_int("min_child_samples", 5, 50),
+            "subsample":         trial.suggest_float("subsample", 0.5, 1.0),
+            "colsample_bytree":  trial.suggest_float("colsample_bytree", 0.5, 1.0),
+            "reg_alpha":         trial.suggest_float("reg_alpha", 1e-3, 10.0, log=True),
+            "reg_lambda":        trial.suggest_float("reg_lambda", 1e-3, 10.0, log=True),
+        }
+        num_rounds = trial.suggest_int("num_boost_round", 100, 600)
+
+        total_top5 = total_cnt = 0
+        for X_tr, y_tr, grp_tr, test_races in cv_splits:
+            model = train_model(X_tr, y_tr, grp_tr, params=params, num_rounds=num_rounds)
+            for Xr, actual_top3, race_index, race_no in test_races:
+                if race_no < 8:  # 8R以降を評価対象
+                    continue
+                scores, _ = predict_race(model, Xr)
+                pred_sorted = race_index[np.argsort(-scores)]
+                total_top5 += len(actual_top3 & set(pred_sorted[:5])) / min(3, len(actual_top3))
+                total_cnt  += 1
+
+        return total_top5 / total_cnt if total_cnt > 0 else 0.0
+
+    PARAMS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    storage = f"sqlite:///{OPTUNA_DB}"
+    study = optuna.create_study(
+        direction="maximize",
+        study_name="kawasaki_top5_8R_v1",
+        storage=storage,
+        load_if_exists=True,
+    )
+    print(f"\nOptuna チューニング開始 ({n_trials}試行, 8R以降 top5_coverage 最大化)")
+    print(f"  DB: {OPTUNA_DB}  続きから再開可能")
+
+    study.optimize(objective, n_trials=n_trials, show_progress_bar=True)
+
+    best = {**study.best_params, "num_boost_round": study.best_params.get("num_boost_round", _DEFAULT_ROUNDS)}
+    PARAMS_PATH.write_text(json.dumps(best, indent=2, ensure_ascii=False))
+    print(f"\n最良スコア (8R以降 top5_coverage): {study.best_value:.1%}")
+    print(f"最良パラメータ: {json.dumps(best, indent=2)}")
+    print(f"保存先: {PARAMS_PATH}")
+
+
 # ── バックテスト ──────────────────────────────────────────
 
 def do_backtest(df_hist: pd.DataFrame) -> None:
@@ -700,10 +819,16 @@ def main():
     parser = argparse.ArgumentParser(description="川崎競馬予測 (LightGBM rank + SHAP根拠)")
     parser.add_argument("--date",     help="予測日 YYYY/MM/DD")
     parser.add_argument("--backtest", action="store_true")
+    parser.add_argument("--tune",     action="store_true", help="Optunaチューニング実行")
+    parser.add_argument("--trials",   type=int, default=100, help="Optuna試行回数 (default: 100)")
     parser.add_argument("--no-oi",   action="store_true", help="大井データを補助に使わない")
     args = parser.parse_args()
 
     df_hist = load_history(use_oi_supplement=not args.no_oi)
+
+    if args.tune:
+        do_tune(df_hist, n_trials=args.trials)
+        return
 
     if args.backtest:
         do_backtest(df_hist)
