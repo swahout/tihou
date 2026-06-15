@@ -668,10 +668,10 @@ def do_tune(df_hist: pd.DataFrame, n_trials: int = 100) -> None:
 
     df_kw = df_hist[df_hist["venue"] == VENUE].copy()
     all_years = sorted(df_kw["race_date"].dt.year.unique())
-    # 直近3年をCV対象（2023以降）
-    test_years = [y for y in all_years if y >= 2023]
+    # 2026年のみをCV対象（最新年の精度を直接最適化）
+    test_years = [y for y in all_years if y == 2026]
     if len(test_years) < 1:
-        print("チューニングに必要なデータ（2023年以降）がありません")
+        print("チューニングに必要なデータ（2026年）がありません")
         return
 
     print(f"CV対象年: {test_years}")
@@ -738,11 +738,11 @@ def do_tune(df_hist: pd.DataFrame, n_trials: int = 100) -> None:
     storage = f"sqlite:///{OPTUNA_DB}"
     study = optuna.create_study(
         direction="maximize",
-        study_name="kawasaki_top5_8R_v1",
+        study_name="kawasaki_2026_8R_top5_v1",
         storage=storage,
         load_if_exists=True,
     )
-    print(f"\nOptuna チューニング開始 ({n_trials}試行, 8R以降 top5_coverage 最大化)")
+    print(f"\nOptuna チューニング開始 ({n_trials}試行, 2026年8R以降 top5_coverage 最大化)")
     print(f"  DB: {OPTUNA_DB}  続きから再開可能")
 
     study.optimize(objective, n_trials=n_trials, show_progress_bar=True)
