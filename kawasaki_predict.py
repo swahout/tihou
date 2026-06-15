@@ -31,8 +31,10 @@ from tabulate import tabulate
 import lightgbm as lgb
 
 # ── パス ──────────────────────────────────────────────────
-KAWASAKI_DIR = Path("data/historical_kawasaki")
-OI_DIR       = Path("data/historical_oi")
+KAWASAKI_DIR   = Path("data/historical_kawasaki")
+OI_DIR         = Path("data/historical_oi")
+FUNABASHI_DIR  = Path("data/historical_funabashi")
+URAWA_DIR      = Path("data/historical_urawa")
 RACES_DIR    = Path("data/races")
 PARAMS_PATH  = Path("data/kawasaki_best_params.json")
 OPTUNA_DB    = Path("data/kawasaki_optuna.db")
@@ -220,18 +222,20 @@ def add_speed_features(df: pd.DataFrame) -> pd.DataFrame:
 
 def load_history(use_oi_supplement: bool = True) -> pd.DataFrame:
     dfs = []
-    if KAWASAKI_DIR.exists():
-        for f in sorted(KAWASAKI_DIR.glob("kawasaki_*.csv")):
-            try:
-                dfs.append(pd.read_csv(f, encoding="utf-8-sig"))
-            except Exception as e:
-                print(f"  警告: {f} ({e})")
-    if use_oi_supplement and OI_DIR.exists():
-        for f in sorted(OI_DIR.glob("oi_*.csv")):
-            try:
-                dfs.append(pd.read_csv(f, encoding="utf-8-sig"))
-            except Exception as e:
-                print(f"  警告: {f} ({e})")
+    # 各場のデータを読み込む（存在する場合のみ）
+    _venue_dirs = [
+        (KAWASAKI_DIR,  "kawasaki_*.csv"),
+        (OI_DIR,        "oi_*.csv"),
+        (FUNABASHI_DIR, "funabashi_*.csv"),
+        (URAWA_DIR,     "urawa_*.csv"),
+    ]
+    for src_dir, pattern in _venue_dirs:
+        if src_dir.exists():
+            for f in sorted(src_dir.glob(pattern)):
+                try:
+                    dfs.append(pd.read_csv(f, encoding="utf-8-sig"))
+                except Exception as e:
+                    print(f"  警告: {f} ({e})")
     if not dfs:
         raise FileNotFoundError(
             "過去データがありません。"
@@ -947,7 +951,7 @@ def do_tune(df_hist: pd.DataFrame, n_trials: int = 100) -> None:
 
     def objective(trial: optuna.Trial) -> float:
         k_horse  = trial.suggest_int("k_horse",  2, 25)
-        k_jockey = trial.suggest_int("k_jockey", 5, 80)
+        k_jockey = trial.suggest_int("k_jockey", 8, 60)
         params = {
             "objective":         "rank_xendcg",
             "metric":            "ndcg",
@@ -996,7 +1000,7 @@ def do_tune(df_hist: pd.DataFrame, n_trials: int = 100) -> None:
     storage = f"sqlite:///{OPTUNA_DB}"
     study = optuna.create_study(
         direction="maximize",
-        study_name="kawasaki_2026_8R_top5_v4",
+        study_name="kawasaki_2026_8R_top5_v5",
         storage=storage,
         load_if_exists=True,
     )

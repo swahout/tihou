@@ -252,7 +252,7 @@ avg_rel_last3f         上がり3F÷レース平均 (1.0未満=キックが強�
 
 ```python
 # kawasaki
-study_name = "kawasaki_2026_8R_top5_v4"  # v1, v2, v3(破損削除), v4...
+study_name = "kawasaki_2026_8R_top5_v5"  # v1, v2, v3(破損削除), v4, v5...
 
 # oi
 study_name = "oi_top3_top5_coverage_v4"
@@ -269,7 +269,8 @@ study_name = "oi_top3_top5_coverage_v4"
 | v1 | 初期構築（25特徴量）速度指数・脚質含む | 25 | 73.6% (233試行) |
 | v2 | 当場当距離・馬場状態別・調教師実績・フォームトレンド・昇降級追加 | 31 | 73.3% (300試行) |
 | v3 | actual_top3インデックスバグで全試行0.0 → 削除 | - | - |
-| v4 | K値Optuna最適化・騎手×距離帯・H2H直接対決スコア追加 | 33 | チューニング中 |
+| v4 | K値Optuna最適化・騎手×距離帯・H2H直接対決スコア追加 | 33 | 73.3% (200試行, K_HORSE=23, K_JOCKEY=6) |
+| v5 | 船橋・浦和データ追加 + K_JOCKEY探索範囲を8-60に絞り込み（v4のK_JOCKEY=6は極端すぎた） | 33 | チューニング中 |
 
 ### oi スタディ履歴
 
