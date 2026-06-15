@@ -140,11 +140,11 @@ tihou/
 
 ---
 
-## 特徴量一覧（kawasaki v2: 31特徴量）
+## 特徴量一覧（kawasaki v3: 33特徴量）
 
 ```
 # 川崎専用
-top3_rate_venue        当場3着内率（Bayesian k=8）
+top3_rate_venue        当場3着内率（Bayesian K_HORSE=Optuna最適化）
 win_rate_venue         当場勝率
 n_venue                当場出走数
 top3_rate_venue_dist   当場×当距離3着内率 ← 地方で最重要 [v2追加]
@@ -172,9 +172,13 @@ avg_last3f_idx         上がり3F相対指数
 avg_corner_ratio       最終コーナー通過順÷頭数（0=逃げ,1=追込）
 
 # 騎手・調教師
-jockey_top3_rate       騎手3着内率（当場、k=30）
+jockey_top3_rate       騎手3着内率（当場、K_JOCKEY=Optuna最適化）
 jockey_win_rate        騎手勝率（当場）
+jockey_top3_rate_dist  騎手×距離帯3着内率（sprint/mile/long）[v3追加]
 trainer_top3_rate      調教師3着内率（当場）[v2追加]
+
+# H2H（直接対決）[v3追加]
+h2h_score              川崎同一フィールドでの過去対戦勝率（2戦未満=0.5）
 
 # フラグ
 is_ten_nori            テン乗りフラグ
@@ -186,6 +190,14 @@ distance / field_size / age / weight_carried / sex_enc / umaban
 days_since_last        休養日数
 data_reliability       n/(n+8)
 ```
+
+### K値最適化について（v3）
+
+v2まで固定値 `K_HORSE=8, K_JOCKEY=30` を使用していたが、feature importance分析で
+「騎手率34.6% vs 当場成績率1.0%」という偏りが判明。Kが小さすぎると当場実績がほぼ prior になる。
+
+v3からは K_HORSE (2-25) と K_JOCKEY (5-80) をOptunaで最適化。
+初期試行では K_HORSE=22, K_JOCKEY=50 が高スコアを示した（より保守的な平滑化が有効）。
 
 ## 特徴量一覧（oi v4: 33特徴量）
 
@@ -240,7 +252,7 @@ avg_rel_last3f         上がり3F÷レース平均 (1.0未満=キックが強�
 
 ```python
 # kawasaki
-study_name = "kawasaki_2026_8R_top5_v2"  # v1, v2...
+study_name = "kawasaki_2026_8R_top5_v4"  # v1, v2, v3(破損削除), v4...
 
 # oi
 study_name = "oi_top3_top5_coverage_v4"
@@ -255,7 +267,9 @@ study_name = "oi_top3_top5_coverage_v4"
 | バージョン | 変更内容 | 特徴量数 | 最高 top5_coverage（8R以降） |
 |-----------|---------|---------|---------------------------|
 | v1 | 初期構築（25特徴量）速度指数・脚質含む | 25 | 73.6% (233試行) |
-| v2 | 当場当距離・馬場状態別・調教師実績・フォームトレンド・昇降級追加 | 31 | チューニング中 |
+| v2 | 当場当距離・馬場状態別・調教師実績・フォームトレンド・昇降級追加 | 31 | 73.3% (300試行) |
+| v3 | actual_top3インデックスバグで全試行0.0 → 削除 | - | - |
+| v4 | K値Optuna最適化・騎手×距離帯・H2H直接対決スコア追加 | 33 | チューニング中 |
 
 ### oi スタディ履歴
 
