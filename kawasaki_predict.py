@@ -229,60 +229,68 @@ def _bayes(num, den, prior, k):
 
 
 def compute_stats(df_hist: pd.DataFrame) -> dict:
-    global_top3_prior = (df_hist["finish_position"] <= 3).mean()
-    global_win_prior  = (df_hist["finish_position"] == 1).mean()
+    """ベクトル化による高速版（apply/lambda を排除）"""
+    df = df_hist.copy()
+    df["_is_top3"] = (df["finish_position"] <= 3).astype(int)
+    df["_is_win"]  = (df["finish_position"] == 1).astype(int)
 
-    grp_total  = df_hist.groupby("horse_name")
-    total_n    = grp_total.size()
-    total_top3 = grp_total.apply(lambda g: (g["finish_position"] <= 3).sum(), include_groups=False)
-    total_win  = grp_total.apply(lambda g: (g["finish_position"] == 1).sum(), include_groups=False)
+    global_top3_prior = df["_is_top3"].mean()
+    global_win_prior  = df["_is_win"].mean()
 
-    df_venue  = df_hist[df_hist["venue"] == VENUE]
-    grp_venue  = df_venue.groupby("horse_name")
-    venue_n    = grp_venue.size()
-    venue_top3 = grp_venue.apply(lambda g: (g["finish_position"] <= 3).sum(), include_groups=False)
-    venue_win  = grp_venue.apply(lambda g: (g["finish_position"] == 1).sum(), include_groups=False)
-    j_top3_prior = (df_venue["finish_position"] <= 3).mean() if len(df_venue) > 0 else global_top3_prior
-    j_win_prior  = (df_venue["finish_position"] == 1).mean() if len(df_venue) > 0 else global_win_prior
+    total_n    = df.groupby("horse_name").size()
+    total_top3 = df.groupby("horse_name")["_is_top3"].sum()
+    total_win  = df.groupby("horse_name")["_is_win"].sum()
 
-    df_s = df_hist.sort_values(["horse_name", "race_date"])
-    recent  = df_s.groupby("horse_name").tail(5)
+    df_venue = df[df["venue"] == VENUE].copy()
+    j_top3_prior = df_venue["_is_top3"].mean() if len(df_venue) > 0 else global_top3_prior
+    j_win_prior  = df_venue["_is_win"].mean()  if len(df_venue) > 0 else global_win_prior
+
+    venue_n    = df_venue.groupby("horse_name").size()
+    venue_top3 = df_venue.groupby("horse_name")["_is_top3"].sum()
+    venue_win  = df_venue.groupby("horse_name")["_is_win"].sum()
+
+    # 直近5走（cumcount降順でtail(5)を再現）
+    df_s = df.sort_values(["horse_name", "race_date"])
+    df_s["_rev_rank"] = df_s.groupby("horse_name").cumcount(ascending=False)
+    recent = df_s[df_s["_rev_rank"] < 5].copy()
     recent_avg       = recent.groupby("horse_name")["finish_position"].mean()
-    recent_top3_rate = recent.groupby("horse_name").apply(
-        lambda g: (g["finish_position"] <= 3).mean(), include_groups=False)
+    recent_top3_rate = recent.groupby("horse_name")["_is_top3"].mean()
 
     df_vs = df_venue.sort_values(["horse_name", "race_date"])
-    recent_venue     = df_vs.groupby("horse_name").tail(5)
-    recent_venue_avg = recent_venue.groupby("horse_name")["finish_position"].mean()
+    df_vs["_rev_rank"] = df_vs.groupby("horse_name").cumcount(ascending=False)
+    recent_v     = df_vs[df_vs["_rev_rank"] < 5]
+    recent_venue_avg = recent_v.groupby("horse_name")["finish_position"].mean()
 
     last_date = df_s.groupby("horse_name")["race_date"].max()
 
-    grp_j   = df_venue.groupby("jockey")
-    j_n     = grp_j.size()
-    j_top3  = grp_j.apply(lambda g: (g["finish_position"] <= 3).sum(), include_groups=False)
-    j_win   = grp_j.apply(lambda g: (g["finish_position"] == 1).sum(), include_groups=False)
+    j_n     = df_venue.groupby("jockey").size()
+    j_top3  = df_venue.groupby("jockey")["_is_top3"].sum()
+    j_win   = df_venue.groupby("jockey")["_is_win"].sum()
 
-    # テン乗り判定セット
-    horse_jockey_pairs = set(zip(df_hist["horse_name"], df_hist["jockey"]))
+    horse_jockey_pairs = set(zip(df["horse_name"], df["jockey"]))
 
-    # ── 速度指数・脚質（precomputed列を集計するだけ） ──
+    # 速度指数（ベクトル化）
     avg_speed_idx  = pd.Series(dtype=float)
     best_speed_idx = pd.Series(dtype=float)
     avg_last3f_idx = pd.Series(dtype=float)
     avg_corner     = pd.Series(dtype=float)
 
-    if 'speed_idx' in df_hist.columns:
-        sp_grp = df_hist.groupby("horse_name")["speed_idx"]
-        avg_speed_idx  = sp_grp.mean()
-        best_speed_idx = sp_grp.apply(lambda x: x.nlargest(3).mean())
-        avg_last3f_idx = df_hist.groupby("horse_name")["last3f_idx"].mean()
-        avg_corner     = df_hist.groupby("horse_name")["corner_ratio"].mean()
+    if "speed_idx" in df.columns:
+        sp_valid = df[df["speed_idx"].notna()].copy()
+        avg_speed_idx = sp_valid.groupby("horse_name")["speed_idx"].mean()
+        # top3平均: rank降順で上位3件を取る
+        sp_valid["_sp_rank"] = sp_valid.groupby("horse_name")["speed_idx"].rank(
+            method="first", ascending=False)
+        best_speed_idx = (sp_valid[sp_valid["_sp_rank"] <= 3]
+                          .groupby("horse_name")["speed_idx"].mean())
+        avg_last3f_idx = df[df["last3f_idx"].notna()].groupby("horse_name")["last3f_idx"].mean()
+        avg_corner     = df[df["corner_ratio"].notna()].groupby("horse_name")["corner_ratio"].mean()
 
     all_horses = set(total_n.index) | set(venue_n.index)
     horse_stats = {}
     for name in all_horses:
-        nt = total_n.get(name, 0)
-        nv = venue_n.get(name, 0)
+        nt = int(total_n.get(name, 0))
+        nv = int(venue_n.get(name, 0))
         horse_stats[name] = {
             "n_total":              nt,
             "n_venue":              nv,
@@ -302,15 +310,15 @@ def compute_stats(df_hist: pd.DataFrame) -> dict:
 
     jockey_stats = {}
     for j in j_n.index:
-        jn = j_n.get(j, 0)
+        jn = int(j_n.get(j, 0))
         jockey_stats[j] = {
             "jockey_top3_rate": _bayes(j_top3.get(j, 0), jn, j_top3_prior, K_JOCKEY),
             "jockey_win_rate":  _bayes(j_win.get(j, 0),  jn, j_win_prior,  K_JOCKEY),
         }
 
     return {
-        "horse":             horse_stats,
-        "jockey":            jockey_stats,
+        "horse":              horse_stats,
+        "jockey":             jockey_stats,
         "horse_jockey_pairs": horse_jockey_pairs,
         "priors": {
             "top3":   global_top3_prior,
@@ -380,20 +388,21 @@ def build_features(df_race: pd.DataFrame, stats: dict, pred_date: pd.Timestamp) 
 # ── 学習データ構築 ─────────────────────────────────────────
 
 def build_train_data(df_hist: pd.DataFrame) -> tuple:
+    """年次ローリングウィンドウで学習データを構築（高速版: 月次→年次でcompute_stats呼び出しを1/12に削減）"""
     df = df_hist.copy()
-    df["year_month"] = df["race_date"].dt.to_period("M")
-    periods = sorted(df["year_month"].unique())
+    df["_year"] = df["race_date"].dt.year
+    years = sorted(df["_year"].unique())
 
     all_X, all_y, all_groups = [], [], []
-    for i, period in enumerate(periods):
-        if i < 2:
+    for i, year in enumerate(years):
+        if i < 1:
             continue
-        df_test   = df[df["year_month"] == period]
-        df_before = df[df["year_month"] < period]
+        df_test   = df[df["_year"] == year]
+        df_before = df[df["_year"] < year]
         if df_before.empty:
             continue
         stats     = compute_stats(df_before)
-        pred_date = pd.Timestamp(str(period.start_time))
+        pred_date = pd.Timestamp(f"{year}-01-01")
 
         for race_id, race_df in df_test.groupby(
             df_test["race_date"].dt.strftime("%Y%m%d") + "_"
