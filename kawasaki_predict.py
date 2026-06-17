@@ -104,6 +104,11 @@ FEATURE_COLS = [
     "umaban",
     "days_since_last",
     "data_reliability",
+    # 過去人気ラグ [v10]（当日人気は不使用・履歴のみ）
+    "lag_pop_mean",
+    "lag_pop_recent",
+    "lag_prev_pop",
+    "lag_poprate_mean",
 ]
 
 FEATURE_LABEL = {
@@ -141,6 +146,10 @@ FEATURE_LABEL = {
     "umaban":                "馬番",
     "days_since_last":       "休養日数",
     "data_reliability":      "データ量",
+    "lag_pop_mean":          "過去人気平均",
+    "lag_pop_recent":        "直近人気",
+    "lag_prev_pop":          "前走人気",
+    "lag_poprate_mean":      "過去人気率",
 }
 
 SEX_MAP = {"牡": 0, "牝": 1, "セン": 2, "": 0}
@@ -195,6 +204,30 @@ def _extract_class(race_name: str) -> int:
     if '未格付' in s or '２歳' in s or '３歳' in s:
         return 0
     return 1
+
+
+def add_lagpop_features(df: pd.DataFrame) -> pd.DataFrame:
+    """[v10] 過去人気ラグ特徴を付与（全データで1回だけ呼ぶ）。
+
+    当日の人気は時々で変動するため使わず、その馬の **過去レースでの人気**
+    （履歴に安定して存在）を集約して「確立した市場評価」を取り込む。
+    すべて shift(1) で当日レースを除外する因果的な値（リーク無し）。
+      lag_pop_mean    : 過去全レースの人気の平均（小さい=常に人気）
+      lag_pop_recent  : 直近3走の人気平均
+      lag_prev_pop    : 前走の人気
+      lag_poprate_mean: 人気/頭数 の平均（頭数差を正規化, 0=最人気側〜1）
+    初出走など過去が無い行は NaN（build_features で中立値に補完）。
+    """
+    df = df.sort_values(["horse_name", "race_date", "race_no"]).copy()
+    pop = pd.to_numeric(df["popularity"], errors="coerce")
+    df["_pop"] = pop
+    df["_poprate"] = pop / df["field_size"].clip(lower=1)
+    g = df.groupby("horse_name", sort=False)
+    df["lag_pop_mean"]     = g["_pop"].apply(lambda s: s.shift(1).expanding().mean()).values
+    df["lag_pop_recent"]   = g["_pop"].apply(lambda s: s.shift(1).rolling(3, min_periods=1).mean()).values
+    df["lag_prev_pop"]     = g["_pop"].shift(1).values
+    df["lag_poprate_mean"] = g["_poprate"].apply(lambda s: s.shift(1).expanding().mean()).values
+    return df.drop(columns=["_pop", "_poprate"])
 
 
 def add_speed_features(df: pd.DataFrame) -> pd.DataFrame:
@@ -265,6 +298,7 @@ def load_history(use_oi_supplement: bool = True,
 
     print(f"速度指数を計算中...")
     df = add_speed_features(df)
+    df = add_lagpop_features(df)
 
     venues = df["venue"].unique().tolist()
     spd_cov = df['speed_idx'].notna().mean()
@@ -320,6 +354,18 @@ def compute_stats(df_hist: pd.DataFrame) -> dict:
     recent_venue_avg = df_vs[df_vs["_rev_rank"] < 5].groupby("horse_name")["finish_position"].mean()
 
     last_date = df_s.groupby("horse_name")["race_date"].max()
+
+    # ── 過去人気ラグ [v10] 当場含む全履歴の人気集約（LIVE予測の補完用）──
+    # 履歴行には add_lagpop_features の因果列が既に乗るが、当日出走表(shutuba)には
+    # 無いため、各馬の「これまでの人気」集約をここで持っておく。
+    _pop = pd.to_numeric(df["popularity"], errors="coerce")
+    df_pop = df.assign(_pop=_pop, _poprate=_pop / df["field_size"].clip(lower=1))
+    pop_mean_s     = df_pop.groupby("horse_name")["_pop"].mean()
+    poprate_mean_s = df_pop.groupby("horse_name")["_poprate"].mean()
+    df_pp = df_pop.sort_values(["horse_name", "race_date"])
+    df_pp["_rr"] = df_pp.groupby("horse_name").cumcount(ascending=False)
+    pop_recent3_s = df_pp[df_pp["_rr"] < 3].groupby("horse_name")["_pop"].mean()
+    pop_last_s    = df_pp[df_pp["_rr"] == 0].set_index("horse_name")["_pop"]
 
     # ── フォームトレンド: (3走前着順 - 最新着順) → 正=改善 ──
     pos_latest = df_s[df_s["_rev_rank"] == 0].set_index("horse_name")["finish_position"]
@@ -437,6 +483,11 @@ def compute_stats(df_hist: pd.DataFrame) -> dict:
             "cond_stats":           cond_dict.get(name, {}),
             "form_trend":           form_trend_s.get(name, np.nan),
             "last_class":           last_class_s.get(name, np.nan),
+            # 過去人気ラグ [v10]（LIVE予測の補完用。履歴行は因果列を直接使う）
+            "lag_pop_mean":         pop_mean_s.get(name, np.nan),
+            "lag_pop_recent":       pop_recent3_s.get(name, np.nan),
+            "lag_prev_pop":         pop_last_s.get(name, np.nan),
+            "lag_poprate_mean":     poprate_mean_s.get(name, np.nan),
         }
 
     jockey_raw: dict = {}
@@ -552,6 +603,21 @@ def build_features(df_race: pd.DataFrame, stats: dict, pred_date: pd.Timestamp,
                 h2h_scores.append(pair["ahead_rate"])
         h2h_score = float(np.mean(h2h_scores)) if h2h_scores else 0.5
 
+        # ── 過去人気ラグ [v10] ──
+        # 履歴由来の行(訓練/バックテスト)は因果列を直接使う。当日出走表は列が無いので
+        # stats の各馬集約で補完。どちらも無い初出走馬は中立値（mid-pack）。
+        def lagpop(col, stat_key, default):
+            v = h.get(col, None)
+            if v is not None and pd.notna(v):
+                return float(v)
+            sv = hs.get(stat_key, np.nan)
+            return float(sv) if pd.notna(sv) else default
+        mid_pop = fs * 0.5
+        lag_pop_mean     = lagpop("lag_pop_mean",     "lag_pop_mean",     mid_pop)
+        lag_pop_recent   = lagpop("lag_pop_recent",   "lag_pop_recent",   mid_pop)
+        lag_prev_pop     = lagpop("lag_prev_pop",     "lag_prev_pop",     mid_pop)
+        lag_poprate_mean = lagpop("lag_poprate_mean", "lag_poprate_mean", 0.5)
+
         row = {
             "horse_name":            name,
             "top3_rate_venue":       top3_rate_venue,
@@ -588,6 +654,11 @@ def build_features(df_race: pd.DataFrame, stats: dict, pred_date: pd.Timestamp,
             "umaban":                h.get("horse_no", 0),
             "days_since_last":       min(days, 999),
             "data_reliability":      n_total / (n_total + DATA_K),
+            # 過去人気ラグ [v10]
+            "lag_pop_mean":          lag_pop_mean,
+            "lag_pop_recent":        lag_pop_recent,
+            "lag_prev_pop":          lag_prev_pop,
+            "lag_poprate_mean":      lag_poprate_mean,
         }
         rows.append(row)
     return pd.DataFrame(rows)
@@ -962,8 +1033,10 @@ def do_tune(df_hist: pd.DataFrame, n_trials: int = 100,
     # metric="top3" → 予測上位3での3着内的中(top3_hit)最大化（v7、目標指標に直接一致）
     cutoff = 3 if metric == "top3" else 5
     if study_name is None:
+        # v10: 過去人気ラグ(lag_pop_*)を37特徴量に追加。特徴量構成が変わったため
+        # study名をインクリメント（旧v6試行とは目的関数空間が異なる）。
         study_name = (f"kawasaki_multiyr_8R_top3_v7" if metric == "top3"
-                      else "kawasaki_multiyr_8R_top5_v6")
+                      else "kawasaki_multiyr_8R_top5_v10")
 
     df_kw = df_hist[df_hist["venue"] == VENUE].copy()
     all_years = sorted(df_kw["race_date"].dt.year.unique())
