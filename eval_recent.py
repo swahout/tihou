@@ -35,10 +35,19 @@ def _load_params_from(path: str | None):
     return params, num_rounds, k_horse, k_jockey
 
 
-def _race_metrics(race_df: pd.DataFrame, scores: np.ndarray) -> tuple[float, float, int]:
-    """1レース分の (top3_hit, top5_coverage, top1_in_top3) を返す。"""
+def _race_metrics(race_df: pd.DataFrame, scores: np.ndarray,
+                  blend: bool = False) -> tuple[float, float, int]:
+    """1レース分の (top3_hit, top5_coverage, top1_in_top3) を返す。
+    blend=True なら市場人気(popularity)とのブレンド順位で評価する。"""
     actual_top3 = set(race_df.index[race_df["finish_position"] <= 3])
-    pred_sorted = race_df.index[np.argsort(-scores)]
+    if blend and "popularity" in race_df.columns:
+        rank_score, _ = kp.blend_order_score(
+            scores, pd.to_numeric(race_df["popularity"], errors="coerce").values
+        )
+        order = np.argsort(-rank_score)
+    else:
+        order = np.argsort(-scores)
+    pred_sorted = race_df.index[order]
     denom = min(3, len(actual_top3))
     top3 = len(actual_top3 & set(pred_sorted[:3])) / denom
     top5 = len(actual_top3 & set(pred_sorted[:5])) / denom
@@ -46,10 +55,12 @@ def _race_metrics(race_df: pd.DataFrame, scores: np.ndarray) -> tuple[float, flo
     return top3, top5, top1
 
 
-def eval_dates(df_hist: pd.DataFrame, dates: list[str], params_path: str | None = None) -> None:
+def eval_dates(df_hist: pd.DataFrame, dates: list[str], params_path: str | None = None,
+               blend: bool = False) -> None:
     lgb_params, num_rounds, k_horse, k_jockey = _load_params_from(params_path)
     print(f"  K_HORSE={k_horse}  K_JOCKEY={k_jockey}  "
-          f"(params: {params_path or kp.PARAMS_PATH})")
+          f"(params: {params_path or kp.PARAMS_PATH})"
+          + (f"  [市場ブレンド w_model={kp.BLEND_W_MODEL}]" if blend else ""))
 
     df_kw = df_hist[df_hist["venue"] == kp.VENUE].copy()
     overall = {"all": [], "r8": []}  # (top3, top5, top1) のリスト
@@ -79,7 +90,7 @@ def eval_dates(df_hist: pd.DataFrame, dates: list[str], params_path: str | None 
             Xr = kp.build_features(race_df, stats, race_df["race_date"].iloc[0],
                                    k_horse=k_horse, k_jockey=k_jockey)
             scores, _ = kp.predict_race(model, Xr)
-            m = _race_metrics(race_df, scores)
+            m = _race_metrics(race_df, scores, blend=blend)
             day["all"].append(m)
             overall["all"].append(m)
             if int(race_df["race_no"].iloc[0]) >= 8:
@@ -110,11 +121,13 @@ def main():
     parser.add_argument("--params", default=None, help="使用するパラメータJSON（省略時は本番v6）")
     parser.add_argument("--no-oi", action="store_true")
     parser.add_argument("--no-nankan", action="store_true")
+    parser.add_argument("--blend", action="store_true",
+                        help="市場人気(popularity)とのブレンド順位で評価")
     args = parser.parse_args()
 
     df_hist = kp.load_history(use_oi_supplement=not args.no_oi,
                               use_nankan_supplement=not args.no_nankan)
-    eval_dates(df_hist, args.dates, params_path=args.params)
+    eval_dates(df_hist, args.dates, params_path=args.params, blend=args.blend)
 
 
 if __name__ == "__main__":

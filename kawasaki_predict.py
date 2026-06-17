@@ -45,6 +45,14 @@ K_HORSE  = 8
 K_JOCKEY = 30
 DATA_K   = 8
 
+# ── 市場人気ブレンド ──────────────────────────────────────
+# モデル順位と市場人気順を rank fusion でブレンドする際のモデル側の重み。
+# w_model=0.0 で市場のみ、1.0 でモデルのみ。LeaveOneYearOut(1818R)検証で
+# w_model≈0.2（市場80%/モデル20%）が top5_coverage 最良。
+# 市場(人気)単独でも top3_hit 58.5% / top5 78.6% / top1 75.0% とモデル単独
+# (48.3% / 68.8% / 56.9%)を大きく上回る。市場が主・モデルが補正。
+BLEND_W_MODEL = 0.2
+
 # ── 特徴量列 ──────────────────────────────────────────────
 FEATURE_COLS = [
     # 当場成績
@@ -710,6 +718,33 @@ def make_reason(shap_row: np.ndarray, feature_names: list[str],
     return ten_label + " ".join(parts)
 
 
+# ── 市場人気ブレンド ──────────────────────────────────────
+
+def market_rank_from_odds(win_odds) -> np.ndarray:
+    """単勝オッズ（小さいほど人気）から市場人気順位を返す。0=最人気。
+    欠損馬は最下位（max+1相当）に寄せる。全頭欠損なら None を返す。"""
+    s = pd.to_numeric(pd.Series(win_odds), errors="coerce").reset_index(drop=True)
+    if not s.notna().any():
+        return None
+    filled = s.fillna(s.max() + 1.0)
+    return filled.rank(method="first").values - 1.0
+
+
+def blend_order_score(model_scores: np.ndarray, win_odds,
+                      w_model: float = BLEND_W_MODEL):
+    """モデルスコアと市場人気を rank fusion でブレンドし、並べ替え用スコアを返す
+    （高いほど上位）。市場オッズが無い場合はモデルスコアのみ（=従来動作）。
+
+    Returns: (rank_score, market_rank or None)
+    """
+    model_rank = pd.Series(-np.asarray(model_scores)).rank(method="first").values - 1.0
+    mkt_rank = market_rank_from_odds(win_odds)
+    if mkt_rank is None:
+        return -model_rank, None
+    combined = w_model * model_rank + (1.0 - w_model) * mkt_rank
+    return -combined, mkt_rank
+
+
 # ── 予測 ──────────────────────────────────────────────────
 
 def predict_race(model: lgb.Booster, X: pd.DataFrame):
@@ -784,8 +819,14 @@ def do_predict(df_hist: pd.DataFrame, date_str: str) -> None:
             else:
                 reasons.append("")
 
+        # 市場人気ブレンド（出走表に win_odds があれば）
+        odds = race_df["win_odds"].values if "win_odds" in race_df.columns else None
+        rank_score, mkt_rank = blend_order_score(scores, odds)
+
         race_df["score"]            = scores
         race_df["top3_prob"]        = top3_prob
+        race_df["rank_score"]       = rank_score
+        race_df["market_pop"]       = (mkt_rank + 1).astype(int) if mkt_rank is not None else 0
         race_df["data_reliability"] = rel
         race_df["n_hist"]           = Xr["n_total"].values
         race_df["n_venue"]          = Xr["n_venue"].values
@@ -841,8 +882,12 @@ def _print_predictions(df_pred: pd.DataFrame, date_str: str) -> None:
     print(f"\n{'='*82}")
     print(f"  川崎競馬 {date_str} 予測")
     print(f"{'='*82}")
+    sort_col = "rank_score" if "rank_score" in df_pred.columns else "top3_prob"
+    has_market = "market_pop" in df_pred.columns and (df_pred["market_pop"] > 0).any()
+    if has_market:
+        print(f"  （市場人気ブレンド適用: w_model={BLEND_W_MODEL}）")
     for race_no, grp in df_pred.groupby("race_no"):
-        top  = grp.sort_values("top3_prob", ascending=False)
+        top  = grp.sort_values(sort_col, ascending=False)
         meta = top.iloc[0]
         cls  = _extract_class(meta.get("race_name", ""))
         cls_label = {7:"A1",6:"A2",5:"B1",4:"B2",3:"C1/B3",2:"C2",1:"C3",0:"未格付"}.get(cls,"")
@@ -861,21 +906,29 @@ def _print_predictions(df_pred: pd.DataFrame, date_str: str) -> None:
             l3f_s = f"{l3f:.3f}" if pd.notna(l3f) else "  -  "
             crn_s = f"{crn:.2f}"  if pd.notna(crn) else "  - "
             reason = h.get("reason", "")
-            rows.append([
+            pop = int(h.get("market_pop", 0))
+            pop_s = f"{pop}人" if pop > 0 else " - "
+            row = [
                 rank,
                 int(h.get("horse_no", 0)),
                 h.get("horse_name", ""),
+            ]
+            if has_market:
+                row.append(pop_s)
+            row += [
                 f"{h['top3_prob']:.1%}",
                 f"{rel:.2f}{warn}",
                 f"{n_v}/{n_t}",
                 spd_s, l3f_s, crn_s,
                 h.get("jockey", ""),
                 reason,
-            ])
-        print(tabulate(rows,
-                       headers=["順","馬番","馬名","3着内確率","信頼度","川崎/通算",
-                                 "速度idx","上がりidx","脚質","騎手","根拠"],
-                       tablefmt="simple"))
+            ]
+            rows.append(row)
+        headers = ["順","馬番","馬名"]
+        if has_market:
+            headers.append("人気")
+        headers += ["3着内確率(M)","信頼度","川崎/通算","速度idx","上がりidx","脚質","騎手","根拠"]
+        print(tabulate(rows, headers=headers, tablefmt="simple"))
 
 
 # ── Optuna チューニング ────────────────────────────────────
@@ -1041,7 +1094,7 @@ def do_tune(df_hist: pd.DataFrame, n_trials: int = 100,
 
 # ── バックテスト ──────────────────────────────────────────
 
-def do_backtest(df_hist: pd.DataFrame) -> None:
+def do_backtest(df_hist: pd.DataFrame, blend: bool = False) -> None:
     _, _, k_horse, k_jockey = _load_params()
     df_kw = df_hist[df_hist["venue"] == VENUE].copy()
     years = sorted(df_kw["race_date"].dt.year.unique())
@@ -1051,7 +1104,13 @@ def do_backtest(df_hist: pd.DataFrame) -> None:
 
     print(f"\n=== LeaveOneYearOut バックテスト ({VENUE}) ===")
     print(f"  K_HORSE={k_horse}  K_JOCKEY={k_jockey}")
-    results = []
+    if blend:
+        print(f"  市場人気ブレンド比較 ON (w_model={BLEND_W_MODEL}) "
+              f"※市場順位は履歴の popularity 列から導出")
+    # variant -> 集計（top5, top3, top1）。blend 時は model/market/blend を並列集計。
+    variants = ["model", "market", "blend"] if blend else ["model"]
+    agg = {v: [] for v in variants}
+
     for test_year in years:
         df_train = df_hist[df_hist["race_date"].dt.year < test_year].copy()
         df_test  = df_kw[df_kw["race_date"].dt.year == test_year].copy()
@@ -1065,40 +1124,68 @@ def do_backtest(df_hist: pd.DataFrame) -> None:
             continue
 
         model = train_model(X_tr, y_tr, groups_tr)
-        top5_t = top3_t = top1_t = cnt = 0
+        ysum = {v: {"top5": 0.0, "top3": 0.0, "top1": 0.0} for v in variants}
+        cnt = 0
 
         for race_id, race_df in df_test.groupby(
             df_test["race_date"].dt.strftime("%Y%m%d") + "_" + df_test["race_no"].astype(str)
         ):
+            race_df = race_df.reset_index(drop=True)
             if len(race_df) < 3:
                 continue
-            Xr = build_features(race_df.reset_index(drop=True), stats,
-                                 race_df["race_date"].iloc[0],
+            Xr = build_features(race_df, stats, race_df["race_date"].iloc[0],
                                  k_horse=k_horse, k_jockey=k_jockey)
             scores, _ = predict_race(model, Xr)
-            actual_top3 = set(race_df.index[race_df["finish_position"] <= 3])
-            pred_sorted = race_df.index[np.argsort(-scores)]
-            top5_t += len(actual_top3 & set(pred_sorted[:5])) / min(3, len(actual_top3))
-            top3_t += len(actual_top3 & set(pred_sorted[:3])) / min(3, len(actual_top3))
-            top1_t += int(pred_sorted[0] in actual_top3)
+            actual_top3 = set(np.where(race_df["finish_position"].values <= 3)[0])
+            denom = min(3, len(actual_top3))
+            if denom == 0:
+                continue
+
+            orders = {"model": np.argsort(-scores, kind="stable")}
+            if blend:
+                # 履歴の popularity（人気順, 1=最人気）を市場順位として使う。
+                # win_odds と同じ昇順（小さい=人気）なので odds 引数にそのまま渡す。
+                pop = pd.to_numeric(race_df["popularity"], errors="coerce")
+                mkt_rank = market_rank_from_odds(pop)
+                if mkt_rank is None:
+                    orders["market"] = orders["model"]
+                    orders["blend"]  = orders["model"]
+                else:
+                    orders["market"] = np.argsort(mkt_rank, kind="stable")
+                    rank_score, _ = blend_order_score(scores, pop)
+                    orders["blend"] = np.argsort(-rank_score, kind="stable")
+
+            for v in variants:
+                ps = orders[v]
+                ysum[v]["top5"] += len(actual_top3 & set(ps[:5])) / denom
+                ysum[v]["top3"] += len(actual_top3 & set(ps[:3])) / denom
+                ysum[v]["top1"] += int(ps[0] in actual_top3)
             cnt += 1
 
         if cnt == 0:
             continue
-        r = {"year": test_year, "races": cnt,
-             "top5_coverage": top5_t / cnt,
-             "top3_hit":      top3_t / cnt,
-             "top1_acc":      top1_t / cnt}
-        results.append(r)
-        print(f"  {test_year}: {cnt}R  "
-              f"top5={r['top5_coverage']:.1%}  "
-              f"top3={r['top3_hit']:.1%}  "
-              f"top1={r['top1_acc']:.1%}")
+        for v in variants:
+            agg[v].append({"top5": ysum[v]["top5"] / cnt,
+                           "top3": ysum[v]["top3"] / cnt,
+                           "top1": ysum[v]["top1"] / cnt})
+        if blend:
+            print(f"  {test_year}: {cnt}R")
+            for v, label in (("market", "市場  "), ("blend", "ブレンド"), ("model", "モデル")):
+                a = agg[v][-1]
+                print(f"      {label}: top5={a['top5']:.1%}  top3={a['top3']:.1%}  top1={a['top1']:.1%}")
+        else:
+            a = agg["model"][-1]
+            print(f"  {test_year}: {cnt}R  "
+                  f"top5={a['top5']:.1%}  top3={a['top3']:.1%}  top1={a['top1']:.1%}")
 
-    if results:
-        print(f"\n平均 top5_coverage: {np.mean([r['top5_coverage'] for r in results]):.1%}")
-        print(f"平均 top3_hit     : {np.mean([r['top3_hit']      for r in results]):.1%}")
-        print(f"平均 top1_acc     : {np.mean([r['top1_acc']      for r in results]):.1%}")
+    if agg["model"]:
+        print()
+        for v, label in (("market", "市場  "), ("blend", "ブレンド"), ("model", "モデル")):
+            if v not in agg or not agg[v]:
+                continue
+            print(f"平均 [{label}] top5={np.mean([r['top5'] for r in agg[v]]):.1%}  "
+                  f"top3={np.mean([r['top3'] for r in agg[v]]):.1%}  "
+                  f"top1={np.mean([r['top1'] for r in agg[v]]):.1%}")
 
 
 # ── main ──────────────────────────────────────────────────
@@ -1113,6 +1200,8 @@ def main():
                         help="チューニング最適化指標。top5=v6(top5_coverage), top3=v7(top3_hit直接最適化)")
     parser.add_argument("--no-oi",     action="store_true", help="大井データを補助に使わない")
     parser.add_argument("--no-nankan", action="store_true", help="船橋・浦和データを補助に使わない（アブレーション用）")
+    parser.add_argument("--blend",     action="store_true",
+                        help="バックテストで市場人気(履歴popularity)とのブレンドを比較")
     args = parser.parse_args()
 
     df_hist = load_history(use_oi_supplement=not args.no_oi,
@@ -1123,7 +1212,7 @@ def main():
         return
 
     if args.backtest:
-        do_backtest(df_hist)
+        do_backtest(df_hist, blend=args.blend)
         return
 
     if args.date:
