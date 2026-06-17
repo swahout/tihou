@@ -110,8 +110,9 @@ def collect_year(year: int, session: KeibaGoSession) -> int:
         return 0
 
     # ファイルが存在しない場合はヘッダーを先に書く
+    # encoding は utf-8（utf-8-sig だと追記のたびにBOMが挿入され race_date が壊れる）
     if not out_path.exists():
-        with open(out_path, "w", encoding="utf-8-sig", newline="") as f:
+        with open(out_path, "w", encoding="utf-8", newline="") as f:
             csv.DictWriter(f, fieldnames=FIELDNAMES).writeheader()
 
     total_rows = 0
@@ -119,7 +120,7 @@ def collect_year(year: int, session: KeibaGoSession) -> int:
         rows = collect_one_date(session, date_str)
         if rows:
             # 1日分を即座に追記（プロセスが死んでもここまでは保存済み）
-            with open(out_path, "a", encoding="utf-8-sig", newline="") as f:
+            with open(out_path, "a", encoding="utf-8", newline="") as f:
                 csv.DictWriter(f, fieldnames=FIELDNAMES).writerows(rows)
             total_rows += len(rows)
             print(f"  [{i}/{len(to_collect)}] {date_str}: {len(rows)}行", flush=True)
@@ -151,7 +152,7 @@ def main():
             year = int(args.date[:4])
             out_path = OUT_DIR / f"kawasaki_{year}.csv"
             mode = "a" if out_path.exists() else "w"
-            with open(out_path, mode, encoding="utf-8-sig", newline="") as f:
+            with open(out_path, mode, encoding="utf-8", newline="") as f:
                 writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
                 if mode == "w":
                     writer.writeheader()

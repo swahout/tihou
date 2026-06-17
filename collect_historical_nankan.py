@@ -123,9 +123,11 @@ def collect_venue_year(venue: str, year: int, session: KeibaGoSession) -> int:
         return 0
 
     # 日ごとに即追記（途中停止してもデータが消えない）
+    # encoding は utf-8（utf-8-sig だと resume 追記のたびにファイル途中へBOMが挿入され、
+    # 直後の行の race_date 先頭に ﻿ が紛れ込んで to_datetime が落ちる）
     need_header = not out_path.exists()
     total_rows = 0
-    with open(out_path, "a", encoding="utf-8-sig", newline="") as f:
+    with open(out_path, "a", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
         if need_header:
             writer.writeheader()
@@ -168,7 +170,7 @@ def main():
                 out_dir.mkdir(parents=True, exist_ok=True)
                 out_path = out_dir / f"{venue_key}_{year}.csv"
                 mode = "a" if out_path.exists() else "w"
-                with open(out_path, mode, encoding="utf-8-sig", newline="") as f:
+                with open(out_path, mode, encoding="utf-8", newline="") as f:
                     writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
                     if mode == "w":
                         writer.writeheader()

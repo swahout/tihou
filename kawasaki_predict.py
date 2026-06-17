@@ -220,15 +220,20 @@ def add_speed_features(df: pd.DataFrame) -> pd.DataFrame:
 
 # ── データ読み込み ─────────────────────────────────────────
 
-def load_history(use_oi_supplement: bool = True) -> pd.DataFrame:
+def load_history(use_oi_supplement: bool = True,
+                 use_nankan_supplement: bool = True) -> pd.DataFrame:
     dfs = []
-    # 各場のデータを読み込む（存在する場合のみ）
-    _venue_dirs = [
-        (KAWASAKI_DIR,  "kawasaki_*.csv"),
-        (OI_DIR,        "oi_*.csv"),
-        (FUNABASHI_DIR, "funabashi_*.csv"),
-        (URAWA_DIR,     "urawa_*.csv"),
-    ]
+    # 川崎(当場)は常にロード。他場は補助データとしてフラグで切替え可能
+    # （アブレーション用: --no-oi / --no-nankan で寄与を検証する）
+    _venue_dirs = [(KAWASAKI_DIR, "kawasaki_*.csv")]
+    if use_oi_supplement:
+        _venue_dirs.append((OI_DIR, "oi_*.csv"))
+    if use_nankan_supplement:
+        _venue_dirs.append((FUNABASHI_DIR, "funabashi_*.csv"))
+        _venue_dirs.append((URAWA_DIR,     "urawa_*.csv"))
+    print("補助データ: "
+          f"大井={'あり' if use_oi_supplement else 'なし'} "
+          f"南関(船橋・浦和)={'あり' if use_nankan_supplement else 'なし'}")
     for src_dir, pattern in _venue_dirs:
         if src_dir.exists():
             for f in sorted(src_dir.glob(pattern)):
@@ -242,6 +247,9 @@ def load_history(use_oi_supplement: bool = True) -> pd.DataFrame:
             " まず: python collect_historical_kawasaki.py --years 2022 2023 2024 2025"
         )
     df = pd.concat(dfs, ignore_index=True)
+    # BOM混入対策: utf-8-sigでの追記(resume)時に ﻿ が race_date 先頭へ紛れ込み
+    # to_datetime が ValueError で落ちることがある。除去してから変換する。
+    df["race_date"]        = df["race_date"].astype(str).str.replace("﻿", "", regex=False).str.strip()
     df["race_date"]        = pd.to_datetime(df["race_date"])
     df["finish_position"]  = pd.to_numeric(df["finish_position"], errors="coerce")
     df = df[df["finish_position"].notna() & (df["finish_position"] >= 1)].copy()
@@ -891,16 +899,26 @@ def _build_race_rows_from_stats(
     return X_list, y_list, g_list
 
 
-def do_tune(df_hist: pd.DataFrame, n_trials: int = 100) -> None:
+def do_tune(df_hist: pd.DataFrame, n_trials: int = 100,
+            metric: str = "top5", study_name: str | None = None) -> None:
     import json
     import optuna
     optuna.logging.set_verbosity(optuna.logging.WARNING)
 
+    # metric="top5" → 予測上位5での3着内カバレッジ最大化（v6）
+    # metric="top3" → 予測上位3での3着内的中(top3_hit)最大化（v7、目標指標に直接一致）
+    cutoff = 3 if metric == "top3" else 5
+    if study_name is None:
+        study_name = (f"kawasaki_multiyr_8R_top3_v7" if metric == "top3"
+                      else "kawasaki_multiyr_8R_top5_v6")
+
     df_kw = df_hist[df_hist["venue"] == VENUE].copy()
     all_years = sorted(df_kw["race_date"].dt.year.unique())
-    test_years = [y for y in all_years if y == 2026]
+    # 過学習対策: 単一年(2026)ではなく複数の held-out 年で評価する。
+    # 各 test_year は「その年より前の全データ」で学習する LeaveOneYearOut 構造。
+    test_years = [y for y in all_years if y in (2024, 2025, 2026)]
     if not test_years:
-        print("チューニングに必要なデータ（2026年）がありません")
+        print("チューニングに必要なデータ（2024〜2026年）がありません")
         return
 
     print(f"CV対象年: {test_years}")
@@ -991,7 +1009,7 @@ def do_tune(df_hist: pd.DataFrame, n_trials: int = 100) -> None:
                                     k_horse=k_horse, k_jockey=k_jockey)
                 scores, _ = predict_race(model, Xr)
                 pred_sorted = race_df.index[np.argsort(-scores)]
-                total_top5 += len(actual_top3 & set(pred_sorted[:5])) / min(3, len(actual_top3))
+                total_top5 += len(actual_top3 & set(pred_sorted[:cutoff])) / min(3, len(actual_top3))
                 total_cnt  += 1
 
         return total_top5 / total_cnt if total_cnt > 0 else 0.0
@@ -1000,21 +1018,25 @@ def do_tune(df_hist: pd.DataFrame, n_trials: int = 100) -> None:
     storage = f"sqlite:///{OPTUNA_DB}"
     study = optuna.create_study(
         direction="maximize",
-        study_name="kawasaki_2026_8R_top5_v5",
+        study_name=study_name,
         storage=storage,
         load_if_exists=True,
     )
-    print(f"\nOptuna チューニング開始 ({n_trials}試行, 2026年8R以降 top5_coverage 最大化)")
+    metric_label = "top3_hit(上位3)" if metric == "top3" else "top5_coverage(上位5)"
+    print(f"\nOptuna チューニング開始 ({n_trials}試行, {test_years}の8R以降 {metric_label} 最大化)")
     print(f"  DB: {OPTUNA_DB}  スタディ: {study.study_name}")
 
     study.optimize(objective, n_trials=n_trials, show_progress_bar=True)
 
     best = {**study.best_params,
             "num_boost_round": study.best_params.get("num_boost_round", _DEFAULT_ROUNDS)}
-    PARAMS_PATH.write_text(json.dumps(best, indent=2, ensure_ascii=False))
-    print(f"\n最良スコア (8R以降 top5_coverage): {study.best_value:.1%}")
+    # v6(top5)は本番 PARAMS_PATH に保存。v7(top3)等は別ファイルに保存して本番を壊さない
+    # （held-out forward で勝ったら手動/明示的に昇格する方針）
+    out_path = PARAMS_PATH if metric == "top5" else PARAMS_PATH.with_name(f"kawasaki_best_params_{metric}.json")
+    out_path.write_text(json.dumps(best, indent=2, ensure_ascii=False))
+    print(f"\n最良スコア (8R以降 {metric_label}): {study.best_value:.1%}")
     print(f"最良パラメータ: {json.dumps(best, indent=2)}")
-    print(f"保存先: {PARAMS_PATH}")
+    print(f"保存先: {out_path}")
 
 
 # ── バックテスト ──────────────────────────────────────────
@@ -1087,13 +1109,17 @@ def main():
     parser.add_argument("--backtest", action="store_true")
     parser.add_argument("--tune",     action="store_true", help="Optunaチューニング実行")
     parser.add_argument("--trials",   type=int, default=100, help="Optuna試行回数 (default: 100)")
-    parser.add_argument("--no-oi",   action="store_true", help="大井データを補助に使わない")
+    parser.add_argument("--metric",   choices=["top5", "top3"], default="top5",
+                        help="チューニング最適化指標。top5=v6(top5_coverage), top3=v7(top3_hit直接最適化)")
+    parser.add_argument("--no-oi",     action="store_true", help="大井データを補助に使わない")
+    parser.add_argument("--no-nankan", action="store_true", help="船橋・浦和データを補助に使わない（アブレーション用）")
     args = parser.parse_args()
 
-    df_hist = load_history(use_oi_supplement=not args.no_oi)
+    df_hist = load_history(use_oi_supplement=not args.no_oi,
+                           use_nankan_supplement=not args.no_nankan)
 
     if args.tune:
-        do_tune(df_hist, n_trials=args.trials)
+        do_tune(df_hist, n_trials=args.trials, metric=args.metric)
         return
 
     if args.backtest:

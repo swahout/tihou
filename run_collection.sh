@@ -2,7 +2,7 @@
 # 収集スクリプトが終了するたびに自動再起動するラッパー
 # 全場の収集が完了したら自動でv5チューニングを開始する
 
-TIHOU=/home/user/tihou
+TIHOU=/e/tihou/tihou
 LOG_DIR=/tmp
 
 restart_count=0
@@ -20,9 +20,10 @@ while true; do
         URAWA_DONE=true
     fi
 
-    # チューニング済み
+    # チューニング済み（完了時に作るsentinelで判定。旧版は出力されないログ文字列を
+    # 見ていたため永久に未完了扱い→再起動のたびに再チューニングするバグがあった）
     TUNE_DONE=false
-    if [ -f "$LOG_DIR/kawasaki_tune_v5.log" ] && grep -q "Best trial" "$LOG_DIR/kawasaki_tune_v5.log" 2>/dev/null; then
+    if [ -f "$LOG_DIR/kawasaki_tune_v6.done" ]; then
         TUNE_DONE=true
     fi
 
@@ -37,9 +38,13 @@ while true; do
         echo "[$(date)] 浦和収集プロセス終了"
 
     elif [ "$TUNE_DONE" = false ]; then
-        echo "[$(date)] v5チューニング開始"
-        python "$TIHOU/kawasaki_predict.py" --tune --trials 200
-        echo "[$(date)] チューニング終了"
+        echo "[$(date)] v6チューニング開始"
+        if python "$TIHOU/kawasaki_predict.py" --tune --trials 200; then
+            touch "$LOG_DIR/kawasaki_tune_v6.done"
+            echo "[$(date)] チューニング終了（完了マーカー作成）"
+        else
+            echo "[$(date)] チューニング失敗（exit!=0）。再起動時に再試行する"
+        fi
         break  # チューニングは1回でOK
 
     else
