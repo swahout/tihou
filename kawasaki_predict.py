@@ -35,6 +35,7 @@ KAWASAKI_DIR   = Path("data/historical_kawasaki")
 OI_DIR         = Path("data/historical_oi")
 FUNABASHI_DIR  = Path("data/historical_funabashi")
 URAWA_DIR      = Path("data/historical_urawa")
+OTHERS_DIR     = Path("data/historical_others")  # 名古屋・金沢など他地区NAR
 RACES_DIR    = Path("data/races")
 PARAMS_PATH  = Path("data/kawasaki_best_params.json")
 OPTUNA_DB    = Path("data/kawasaki_optuna.db")
@@ -262,7 +263,8 @@ def add_speed_features(df: pd.DataFrame) -> pd.DataFrame:
 # ── データ読み込み ─────────────────────────────────────────
 
 def load_history(use_oi_supplement: bool = True,
-                 use_nankan_supplement: bool = True) -> pd.DataFrame:
+                 use_nankan_supplement: bool = True,
+                 use_others_supplement: bool = True) -> pd.DataFrame:
     dfs = []
     # 川崎(当場)は常にロード。他場は補助データとしてフラグで切替え可能
     # （アブレーション用: --no-oi / --no-nankan で寄与を検証する）
@@ -272,9 +274,23 @@ def load_history(use_oi_supplement: bool = True,
     if use_nankan_supplement:
         _venue_dirs.append((FUNABASHI_DIR, "funabashi_*.csv"))
         _venue_dirs.append((URAWA_DIR,     "urawa_*.csv"))
+    # その他NAR場（名古屋・金沢等）。交流戦で南関以外から遠征してくる馬を
+    # 評価するために収集した場合に取り込む（data/historical_others/）。
+    # ※南関4場(kawasaki/oi/funabashi/urawa)は専用ディレクトリから読むため、
+    #   OTHERS_DIR に同名の残骸があっても二重計上しないよう除外する。
+    _OTHER_VENUES = ("nagoya", "kanazawa", "monbetsu", "sonoda",
+                     "himeji", "kasamatsu", "kochi", "saga")
+    n_others = 0
+    if use_others_supplement and OTHERS_DIR.exists():
+        for prefix in _OTHER_VENUES:
+            files = list(OTHERS_DIR.glob(f"{prefix}_*.csv"))
+            if files:
+                _venue_dirs.append((OTHERS_DIR, f"{prefix}_*.csv"))
+                n_others += len(files)
     print("補助データ: "
           f"大井={'あり' if use_oi_supplement else 'なし'} "
-          f"南関(船橋・浦和)={'あり' if use_nankan_supplement else 'なし'}")
+          f"南関(船橋・浦和)={'あり' if use_nankan_supplement else 'なし'} "
+          f"他場={f'{n_others}ファイル' if n_others else 'なし'}")
     for src_dir, pattern in _venue_dirs:
         if src_dir.exists():
             for f in sorted(src_dir.glob(pattern)):
@@ -1273,12 +1289,14 @@ def main():
                         help="チューニング最適化指標。top5=v6(top5_coverage), top3=v7(top3_hit直接最適化)")
     parser.add_argument("--no-oi",     action="store_true", help="大井データを補助に使わない")
     parser.add_argument("--no-nankan", action="store_true", help="船橋・浦和データを補助に使わない（アブレーション用）")
+    parser.add_argument("--no-others", action="store_true", help="名古屋・金沢等の他場データを補助に使わない")
     parser.add_argument("--blend",     action="store_true",
                         help="バックテストで市場人気(履歴popularity)とのブレンドを比較")
     args = parser.parse_args()
 
     df_hist = load_history(use_oi_supplement=not args.no_oi,
-                           use_nankan_supplement=not args.no_nankan)
+                           use_nankan_supplement=not args.no_nankan,
+                           use_others_supplement=not args.no_others)
 
     if args.tune:
         do_tune(df_hist, n_trials=args.trials, metric=args.metric)
