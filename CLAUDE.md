@@ -49,6 +49,11 @@ NAR（地方競馬全国協会）主催の地方競馬を対象に、アンサ�
 
 重みはOptunaで自動最適化される。
 
+> **[他場補助] 交流戦の遠征馬対応**: 南関4場(川崎・大井・船橋・浦和)に加え、`data/historical_others/`
+> に `{nagoya,kanazawa,...}_*.csv` を置くと `load_history` が自動で取り込む(`--no-others`で無効化)。
+> JpnII等の交流戦で名古屋・金沢等から遠征する馬(南関DBで通0=盲目)を評価するため。JRA馬は
+> keiba.go.jpでは取得不可(market頼み)。収集: `collect_historical_others.py --years 2026 --venues 名古屋 金沢`。
+
 **川崎 (kawasaki) — 単一 LightGBM LambdaRank**（`kawasaki_predict.py`、`models/ensemble.py` は不使用）
 
 - `objective="rank_xendcg"`, `metric="ndcg"`（ndcg@3,5）
