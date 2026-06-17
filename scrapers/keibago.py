@@ -324,6 +324,57 @@ def get_deba_entries(session: KeibaGoSession, date_str: str,
     return horses
 
 
+def get_tanfuku_odds(session: KeibaGoSession, date_str: str,
+                     baba_code: int, race_no: int) -> list[dict]:
+    """
+    OddsTanFuku から単勝・複勝オッズを取得（当日・直近レース用）。
+
+    歴史データの RaceMarkTable は確定オッズを返さない（win_odds 99% 欠損）が、
+    OddsTanFuku は当日〜直近のオッズを確定値で返す。未来・直近レースの
+    予測時に市場人気をブレンドするために使う。
+
+    列順 (データ行 13 cells):
+      [0]=枠, [1]=馬番, [2]=馬名, [3]=単勝オッズ, [4]=複勝low, [5]=複勝high,
+      [6]=性齢, [7]=馬体重, [8]=負担重量, [9]=騎手, [10]=所属, [11]=調教師, [12]=変更情報
+
+    返り値: [{horse_no, win_odds, place_odds_low, place_odds_high}, ...]
+    （win_odds から人気順は呼び出し側で rank して導出する）
+    """
+    date_enc = date_str.replace("/", "%2F")
+    url = (
+        f"{BASE_URL}/KeibaWeb/TodayRaceInfo/OddsTanFuku"
+        f"?k_raceDate={date_enc}&k_babaCode={baba_code}&k_raceNo={race_no}"
+    )
+    soup = session.get_soup(url)
+    if not soup:
+        return []
+    table = soup.find("table")
+    if not table:
+        return []
+
+    def _to_float(s: str):
+        s = (s or "").strip().rstrip("-").strip()
+        if not s or s in ("---", "取消", "中止"):
+            return None
+        try:
+            return float(s)
+        except ValueError:
+            return None
+
+    out = []
+    for row in table.find_all("tr"):
+        cells = [c.get_text(strip=True) for c in row.find_all(["td", "th"])]
+        if len(cells) < 4 or not cells[1].isdigit():
+            continue  # ヘッダー行や空行をスキップ
+        out.append({
+            "horse_no": int(cells[1]),
+            "win_odds": _to_float(cells[3]),
+            "place_odds_low": _to_float(cells[4]) if len(cells) > 4 else None,
+            "place_odds_high": _to_float(cells[5]) if len(cells) > 5 else None,
+        })
+    return out
+
+
 def get_race_entries(session: KeibaGoSession, date_str: str,
                      baba_code: int, race_no: int) -> list[dict]:
     """後方互換ラッパー: get_race_data を呼ぶ"""

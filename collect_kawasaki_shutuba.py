@@ -12,7 +12,9 @@ import csv
 from datetime import datetime
 from pathlib import Path
 
-from scrapers.keibago import KeibaGoSession, VENUE_MAP, get_race_list, get_deba_entries
+from scrapers.keibago import (
+    KeibaGoSession, VENUE_MAP, get_race_list, get_deba_entries, get_tanfuku_odds,
+)
 
 VENUE = "川崎"
 BABA_CODE = VENUE_MAP[VENUE]
@@ -49,7 +51,17 @@ def main():
         if not entries:
             continue
         field_size = len(entries)
+
+        # OddsTanFuku で単勝オッズを補完（DebaTable はレース前は空のことが多い）。
+        # 市場人気ブレンドの入力になる。当日〜直近のみ取得可。
+        odds_map = {}
+        for o in get_tanfuku_odds(session, date_str, BABA_CODE, rno):
+            if o.get("win_odds") is not None:
+                odds_map[o["horse_no"]] = o["win_odds"]
+
         for h in entries:
+            if h.get("win_odds") is None and h["horse_no"] in odds_map:
+                h["win_odds"] = odds_map[h["horse_no"]]
             rows.append({
                 "race_date": date_str,
                 "venue": VENUE,
